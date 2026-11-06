@@ -99,6 +99,13 @@
     return DATA.region || "US";
   }
   let COUNTRY = detectCountry();
+  const isWorld = () => COUNTRY === "WW";
+  // The visitor's own country, remembered so the Worldwide switch can flip back.
+  const HOME_KEY = "movie-countdown:home-country";
+  let HOME_COUNTRY = (() => {
+    try { const h = localStorage.getItem(HOME_KEY); if (h) return h; } catch (_) { /* ignore */ }
+    return COUNTRY === "WW" ? (TZ_COUNTRY[Intl.DateTimeFormat().resolvedOptions().timeZone] || DATA.region || "US") : COUNTRY;
+  })();
   const TICKETS = window.TICKETS || {};
   const cityKey = (cc) => `movie-countdown:city:${cc}`;
   const loadCity = (cc) => { try { return localStorage.getItem(cityKey(cc)) || ""; } catch (_) { return ""; } };
@@ -107,7 +114,10 @@
   const displayNames = (type) => { try { return new Intl.DisplayNames([LANG], { type }); } catch (_) { return null; } };
   const regionNames = displayNames("region");
   const languageNames = displayNames("language");
-  const countryName = (cc) => { try { return regionNames?.of(cc) || cc; } catch (_) { return cc; } };
+  const countryName = (cc) => {
+    if (cc === "WW") return "Worldwide";
+    try { return regionNames?.of(cc) || cc; } catch (_) { return cc; }
+  };
   const languageName = (code) => { try { return languageNames?.of(code) || code; } catch (_) { return code; } };
 
   // Translated titles / overviews / taglines, loaded only for the visitor's language.
@@ -132,15 +142,15 @@
   const UNITS = [unitLabel("day", "Days"), unitLabel("hour", "Hours"), unitLabel("minute", "Minutes"), unitLabel("second", "Seconds")];
 
   // ---------- dates (per country) ----------
-  const dateStr = (m) => m.dates?.[COUNTRY] || m.date;
-  const datedHere = (m) => !m.dates || !!m.dates[COUNTRY];
+  const dateStr = (m) => (isWorld() ? m.date : m.dates?.[COUNTRY] || m.date);
+  const datedHere = (m) => isWorld() || !m.dates || !!m.dates[COUNTRY];
   const parseDay = (s) => { const [y, mo, d] = s.split("-").map(Number); return new Date(y, mo - 1, d || 1).getTime(); };
   const dayKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
   const startOfDay = (t = Date.now()) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
   const time = (m) => parseDay(dateStr(m));
   const isOut = (m) => time(m) <= Date.now();
   const byDate = (a, b) => time(a) - time(b);
-  const visible = (m) => m.kind !== "rerelease" || !!m.dates?.[COUNTRY];
+  const visible = (m) => m.kind !== "rerelease" || isWorld() || !!m.dates?.[COUNTRY];
   const isRe = (m) => m.kind === "rerelease";
 
   const listed = () => all().filter(visible);
@@ -283,12 +293,21 @@
       .join("");
   }
 
+  // Local ⇄ Worldwide switch
+  function scopeSwitch() {
+    return `<div class="seg scope" role="group" aria-label="Release region">
+      <button type="button" class="${isWorld() ? "" : "active"}" data-scope="${esc(HOME_COUNTRY)}">📍 ${esc(countryName(HOME_COUNTRY))}</button>
+      <button type="button" class="${isWorld() ? "active" : ""}" data-scope="WW">🌐 Worldwide</button>
+    </div>`;
+  }
+
   // ---------- home ----------
   function renderHome() {
     document.title = "Movie Countdown";
     const top = anticipated();
     const hero = top[0] || upcomingHere()[0] || upcoming()[0] || released()[0];
     const here = esc(countryName(COUNTRY));
+    const inHere = isWorld() ? "Worldwide" : `in ${here}`;
     const weekEnd = startOfDay() + 7 * DAY;
     const thisWeek = upcomingHere().filter((m) => time(m) < weekEnd);
 
@@ -322,16 +341,17 @@
             <kbd>/</kbd>
           </button>
           <a class="btn btn-ghost" href="${calHref(dayKey(Date.now()))}">📅 Release calendar</a>
+          ${scopeSwitch()}
         </div>
         ${row("row-top", `Top 10 Most Anticipated in ${rankKey() === "WW" ? "the World" : here}`, top.slice(0, 10), rankCard, "rail-ranked")}
-        ${row("row-week", `Releasing This Week in ${here}`, thisWeek, card, "",
+        ${row("row-week", `Releasing This Week ${inHere}`, thisWeek, card, "",
           `<a class="row-link" href="${calHref(dayKey(Date.now()), "week")}">Open calendar ›</a>`)}
-        ${row("row-upcoming", `Coming Soon in ${here}`, upcomingHere().slice(0, 30))}
+        ${row("row-upcoming", `Coming Soon ${inHere}`, upcomingHere().slice(0, 30))}
         ${rankKey() !== "WW" ? row("row-world", "Worldwide Most Anticipated", anticipated("WW").slice(0, 20)) : ""}
         ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
         ${languageRows()}
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
-        ${row("row-out", `Out Now in ${here}`, released().slice(0, 20))}
+        ${row("row-out", `Out Now ${inHere}`, released().slice(0, 20))}
       </div>`;
     startEmbers($(".billboard canvas"), hero.hue);
   }
@@ -460,6 +480,7 @@
             <p class="kicker">Release calendar · ${here}</p>
             <h1 class="cal-title">${esc(fmt(selT, { month: "long", year: "numeric" }))}</h1>
           </div>
+          ${scopeSwitch()}
           <div class="cal-stats">
             <a class="stat ${mode === "day" && selT === todayT ? "active" : ""}" href="${calHref(dayKey(todayT))}"><b>${todayN}</b><span>Today</span></a>
             <a class="stat ${mode === "week" && rs <= todayT && todayT < re ? "active" : ""}" href="${calHref(dayKey(todayT), "week")}"><b>${weekN}</b><span>This week</span></a>
@@ -481,7 +502,7 @@
               ${weekdayNames.map((w) => `<span class="cal-wd">${esc(w)}</span>`).join("")}
               ${cells}
             </div>
-            <p class="muted small">🌐 = no date announced in ${here} yet, so the worldwide date is used.</p>
+            <p class="muted small">${isWorld() ? "Showing each film's main worldwide release date." : `🌐 = no date announced in ${here} yet, so the worldwide date is used.`}</p>
           </div>
 
           <div class="cal-list">
@@ -655,7 +676,7 @@
           <p class="about-text">${esc(synopsis(m) || tagline(m) || "More details coming soon.")}</p>
         </div>
         <dl class="facts">
-          <div><dt>Release in ${esc(countryName(COUNTRY))}</dt><dd>${datedHere(m) ? esc(longDate(time(m))) : "Not announced yet"}</dd></div>
+          <div><dt>${isWorld() ? "Worldwide release" : `Release in ${esc(countryName(COUNTRY))}`}</dt><dd>${datedHere(m) ? esc(longDate(time(m))) : "Not announced yet"}</dd></div>
           ${!datedHere(m) ? `<div><dt>Worldwide release</dt><dd>${esc(longDate(parseDay(m.date)))}</dd></div>` : ""}
           ${isRe(m) && m.originalDate ? `<div><dt>Original release</dt><dd>${esc(longDate(parseDay(m.originalDate)))}</dd></div>` : ""}
           ${m.lang ? `<div><dt>Language</dt><dd>${esc(languageName(m.lang))}${m.origin?.length ? ` · ${m.origin.map((c) => esc(countryName(c))).join(", ")}` : ""}</dd></div>` : ""}
@@ -851,7 +872,7 @@
     const q = norm(searchInput.value.trim());
     if (!q) {
       const pick = anticipated().slice(0, 8);
-      searchResults.innerHTML = `<p class="search-label">Most anticipated in ${esc(countryName(COUNTRY))}</p>${pick.map(searchMovie).join("")}`;
+      searchResults.innerHTML = `<p class="search-label">Most anticipated ${isWorld() ? "worldwide" : `in ${esc(countryName(COUNTRY))}`}</p>${pick.map(searchMovie).join("")}`;
       return;
     }
     const words = q.split(/\s+/);
@@ -1099,6 +1120,9 @@
 
     if (t.closest("[data-open-location]")) return openLocation();
 
+    const scope = t.closest("[data-scope]");
+    if (scope) return setCountry(scope.dataset.scope);
+
     const inline = t.closest("[data-inline], [data-inline-play]");
     if (inline) {
       const player = $("[data-player]");
@@ -1182,12 +1206,13 @@
   const countrySel = $("#country");
   const cityInput = $("#cityInput");
   function updateLocText() {
-    $("#locText").textContent = CITY ? `${CITY}` : countryName(COUNTRY);
+    $("#locText").textContent = isWorld() ? "Worldwide" : CITY ? `${CITY}` : countryName(COUNTRY);
+    $("#locBtn").firstElementChild.textContent = isWorld() ? "🌐" : "📍";
     $("#locBtn").title = `${CITY ? CITY + ", " : ""}${countryName(COUNTRY)}`;
   }
   function renderCityChips() {
     const cities = TICKETS[COUNTRY]?.cities || [];
-    $("#cityChips").innerHTML = cities.length
+    $("#cityChips").innerHTML = isWorld() ? `<p class="muted small">Pick a country to choose a city.</p>` : cities.length
       ? [`<button type="button" class="${!CITY ? "active" : ""}" data-city="">Whole country</button>`,
         ...cities.map((c) => `<button type="button" class="${c === CITY ? "active" : ""}" data-city="${esc(c)}">${esc(c)}</button>`)].join("")
       : `<p class="muted small">No city list for ${esc(countryName(COUNTRY))} yet — type your city below.</p>`;
@@ -1217,6 +1242,19 @@
   function openTickets(m) {
     if (!m) return;
     ticketFor = m;
+    if (isWorld()) {
+      $(".tk-body", ticketDialog).innerHTML = `
+        <div class="tk-movie" style="${theme(m.hue)}">
+          <span class="tk-poster" style="${bg(m.poster)}"></span>
+          <div><p class="kicker">Get tickets</p><h2>${esc(title(m))}</h2>
+          <p class="muted">Worldwide release: ${esc(longDate(parseDay(m.date)))}</p></div>
+        </div>
+        <p class="tk-status">Ticket sites and release dates depend on where you are. Pick your country to see where to book.</p>
+        <button class="btn btn-solid" type="button" data-scope="${esc(HOME_COUNTRY)}">📍 Show tickets in ${esc(countryName(HOME_COUNTRY))}</button>
+        <button class="tk-loc" type="button" data-open-location><span>🌍 Choose another country</span><span class="tk-change">›</span></button>`;
+      if (!ticketDialog.open) ticketDialog.showModal();
+      return;
+    }
     const info = TICKETS[COUNTRY];
     const place = CITY || countryName(COUNTRY);
     const name = title(m);
@@ -1263,20 +1301,32 @@
 
   // Country list
   function fillCountries() {
-    const codes = new Set([COUNTRY, ...REGIONS]);
+    const codes = new Set([HOME_COUNTRY, ...REGIONS]);
+    if (!isWorld()) codes.add(COUNTRY);
     DATA.movies.forEach((m) => Object.keys(m.dates || {}).forEach((c) => codes.add(c)));
     const list = [...codes].map((c) => [c, countryName(c)]).sort((a, b) => a[1].localeCompare(b[1], LANG));
-    countrySel.innerHTML = list.map(([c, n]) => `<option value="${c}" ${c === COUNTRY ? "selected" : ""}>${esc(n)}</option>`).join("");
+    countrySel.innerHTML = `<option value="WW" ${isWorld() ? "selected" : ""}>🌐 Worldwide — all countries</option>` +
+      list.map(([c, n]) => `<option value="${c}" ${c === COUNTRY ? "selected" : ""}>${esc(n)}</option>`).join("");
   }
-  countrySel.addEventListener("change", () => {
-    COUNTRY = countrySel.value;
+  function setCountry(cc) {
+    if (!cc) return;
+    COUNTRY = cc;
+    if (cc !== "WW") {
+      HOME_COUNTRY = cc;
+      try { localStorage.setItem(HOME_KEY, cc); } catch (_) { /* ignore */ }
+    }
     try { localStorage.setItem(COUNTRY_KEY, COUNTRY); } catch (_) { /* ignore */ }
-    CITY = loadCity(COUNTRY);
+    CITY = isWorld() ? "" : loadCity(COUNTRY);
+    fillCountries();
     renderCityChips();
     updateLocText();
+    const y = scrollY;
     route();
+    if (section(location.hash) === "home" || section(location.hash) === "calendar") scrollTo(0, y);
     if (ticketDialog.open && ticketFor) openTickets(ticketFor);
-  });
+    toast(isWorld() ? "Showing worldwide releases" : `Showing ${countryName(COUNTRY)}`);
+  }
+  countrySel.addEventListener("change", () => setCountry(countrySel.value));
 
   // Add custom movie
   const addDialog = $("#addDialog");

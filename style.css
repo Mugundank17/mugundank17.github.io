@@ -840,3 +840,14 @@ a.person:hover .btn-outline { border-color: #fff; background: rgba(255,255,255,.
   .nav { padding: 12px 12px; }
   .brand { font-size: 12px; }
 }
+
+/* Local ⇄ Worldwide switch */
+.seg.scope { margin-left: 0; align-self: center; }
+.home-tools .seg.scope { padding: 4px; }
+.seg.scope button { padding: 8px 14px; font-size: 13px; }
+.cal-head .seg.scope { margin-left: auto; }
+@media (max-width: 640px) {
+  .home-tools .seg.scope { width: 100%; justify-content: stretch; }
+  .home-tools .seg.scope button { flex: 1; }
+  .cal-head .seg.scope { margin-left: 0; }
+}
