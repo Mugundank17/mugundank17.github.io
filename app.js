@@ -8,8 +8,9 @@
   const nav = $("#nav");
 
   // ---------- data ----------
+  const DATA = window.MOVIE_DATA || { movies: [] };
   let custom = loadCustom();
-  const all = () => [...window.MOVIES, ...custom];
+  const all = () => [...DATA.movies, ...custom];
 
   function loadCustom() {
     try {
@@ -84,7 +85,7 @@
     </g></svg>`;
 
   const fireLayers = (m, extra = "") => `
-    <div class="fire" aria-hidden="true">
+    <div class="fire ${m.backdrop ? "has-img" : ""}" aria-hidden="true">
       <div class="fire-img" style="background-image:${esc(img(m.backdrop))}"></div>
       <div class="smoke s1"></div><div class="smoke s2"></div><div class="smoke s3"></div>
       ${extra}
@@ -93,7 +94,15 @@
     </div>`;
 
   function trailerBtn(m) {
-    return `<button class="play" type="button" data-trailer="${esc(m.id)}"><span>▶</span> Watch Trailer</button>`;
+    const first = m.trailers?.[0];
+    const label = first ? (first.type === "Teaser" ? "Watch Teaser" : "Watch Trailer") : "Find Trailer";
+    return `<button class="play" type="button" data-trailer="${esc(m.id)}"><span>▶</span> ${label}</button>`;
+  }
+
+  function titleArt(m, cls) {
+    return m.logo
+      ? `<img class="${cls} logo" src="${esc(m.logo)}" alt="${esc(m.title)}" loading="lazy">`
+      : `<span class="${cls}">${esc(m.title)}</span>`;
   }
   function ticketHref(m) {
     return m.tickets || `https://www.google.com/search?q=${encodeURIComponent(m.title + " movie tickets near me")}`;
@@ -101,14 +110,14 @@
 
   // ---------- cards & rows ----------
   function card(m) {
-    const art = m.poster || m.backdrop;
+    const art = m.card || m.backdrop || m.poster;
     const d = daysLeft(m);
     const badge = isOut(m) ? `<span class="tag tag-out">Out now</span>`
       : d <= 30 ? `<span class="tag">${d <= 1 ? "Tomorrow" : `${d} days`}</span>` : "";
     return `
       <a class="card" href="#/movie/${encodeURIComponent(m.id)}" style="${theme(m)}">
-        <div class="card-art" style="background-image:${esc(img(art))}">
-          ${art ? "" : `<span class="card-title">${esc(m.title)}</span>`}
+        <div class="card-art ${art ? "has-img" : ""}" style="background-image:${esc(img(art))}">
+          ${titleArt(m, "card-title")}
           ${badge}
         </div>
         <div class="card-info">
@@ -143,13 +152,18 @@
     const hero = up[0] || released()[0];
     const years = [...new Set(up.map((m) => m.date.slice(0, 4)))];
 
+    if (!hero) {
+      app.innerHTML = `<section class="empty-state"><h1>No movies yet</h1>
+        <p>Run the “Update movies” GitHub Action (or <code>npm run update</code>) to load movies from TMDB, or press + Add.</p></section>`;
+      return;
+    }
     app.innerHTML = `
       ${hero ? `
       <header class="billboard cine" style="${theme(hero)}">
         ${fireLayers(hero)}
         <div class="billboard-body">
           <p class="kicker">${isOut(hero) ? "Now showing" : "Next release"}</p>
-          <h1 class="bb-title">${esc(hero.title)}</h1>
+          <h1 class="bb-title">${hero.logo ? `<img class="bb-logo" src="${esc(hero.logo)}" alt="${esc(hero.title)}">` : esc(hero.title)}</h1>
           <p class="bb-meta">${esc(fmtDate(hero))}${hero.genres ? " · " + hero.genres.map(esc).join(" · ") : ""}</p>
           ${hero.synopsis ? `<p class="bb-text">${esc(hero.synopsis)}</p>` : ""}
           ${countdown(hero, "cd-bb")}
@@ -203,13 +217,13 @@
             <div class="rail cast-rail">
               ${cast.map((c) => `
                 <article class="person">
-                  <div class="person-photo" style="background-image:${esc(img(c.photo))}">
+                  <div class="person-photo ${c.photo ? "has-img" : ""}" style="background-image:${esc(img(c.photo))}">
                     ${c.photo ? "" : `<span>${esc(initials(c.actor))}</span>`}
                   </div>
                   <p class="person-actor">${esc(c.role ? c.actor : "Cast")}</p>
                   <h3 class="person-role">${esc(c.role || c.actor)}</h3>
                   <a class="btn btn-outline btn-sm" target="_blank" rel="noopener"
-                     href="https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(c.actor)}">See More</a>
+                     href="${c.tmdb ? `https://www.themoviedb.org/person/${encodeURIComponent(c.tmdb)}` : `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(c.actor)}`}">See More</a>
                 </article>`).join("")}
             </div>
           </div>
@@ -228,9 +242,30 @@
         <dl class="facts">
           <div><dt>Release</dt><dd>${esc(fmtDate(m))}</dd></div>
           ${m.director ? `<div><dt>Director</dt><dd>${esc(m.director)}</dd></div>` : ""}
-          ${m.genres ? `<div><dt>Genre</dt><dd>${m.genres.map(esc).join(", ")}</dd></div>` : ""}
+          ${m.genres?.length ? `<div><dt>Genre</dt><dd>${m.genres.map(esc).join(", ")}</dd></div>` : ""}
+          ${m.runtime ? `<div><dt>Runtime</dt><dd>${Math.floor(m.runtime / 60)}h ${m.runtime % 60}m</dd></div>` : ""}
           ${cast.length ? `<div><dt>Starring</dt><dd>${cast.slice(0, 4).map((c) => esc(c.actor)).join(", ")}</dd></div>` : ""}
         </dl>
+        ${m.trailers?.length ? `
+        <div class="videos">
+          <p class="kicker">Trailers &amp; teasers</p>
+          <div class="video-grid">
+            ${m.trailers.map((v, i) => `
+              <button class="video-thumb" type="button" data-trailer="${esc(m.id)}" data-index="${i}">
+                <img src="https://i.ytimg.com/vi/${encodeURIComponent(v.key)}/hqdefault.jpg" alt="" loading="lazy">
+                <span class="vt-play">▶</span>
+                <span class="vt-name">${esc(v.name)}</span>
+                <span class="vt-meta">${esc(v.type)}${v.published ? " · " + esc(v.published) : ""}</span>
+              </button>`).join("")}
+          </div>
+        </div>` : ""}
+        ${m.links ? `
+        <div class="links">
+          ${m.links.official ? `<a class="btn btn-ghost btn-sm" href="${esc(m.links.official)}" target="_blank" rel="noopener">Official site ↗</a>` : ""}
+          ${m.links.imdb ? `<a class="btn btn-ghost btn-sm" href="${esc(m.links.imdb)}" target="_blank" rel="noopener">IMDb ↗</a>` : ""}
+          ${m.links.letterboxd ? `<a class="btn btn-ghost btn-sm" href="${esc(m.links.letterboxd)}" target="_blank" rel="noopener">Letterboxd ↗</a>` : ""}
+          ${m.links.tmdb ? `<a class="btn btn-ghost btn-sm" href="${esc(m.links.tmdb)}" target="_blank" rel="noopener">TMDB ↗</a>` : ""}
+        </div>` : ""}
         ${isCustom ? `<button class="btn btn-ghost btn-sm" type="button" data-remove="${esc(m.id)}">Remove this countdown</button>` : ""}
       </section>
 
@@ -324,7 +359,10 @@
     }
 
     const tr = t.closest("[data-trailer]");
-    if (tr) return openTrailer(all().find((m) => m.id === tr.dataset.trailer));
+    if (tr) return openTrailer(all().find((m) => m.id === tr.dataset.trailer), +(tr.dataset.index || 0));
+
+    const pick = t.closest("[data-video]");
+    if (pick) return playVideo(+pick.dataset.video);
 
     const ics = t.closest("[data-ics]");
     if (ics) return downloadIcs(all().find((m) => m.id === ics.dataset.ics));
@@ -340,18 +378,29 @@
 
   // Trailer
   const trailer = $("#trailer");
-  function openTrailer(m) {
+  let playing = null;
+  function openTrailer(m, index = 0) {
     if (!m) return;
-    if (!m.trailer) {
+    const vids = m.trailers || (m.trailer ? [{ key: m.trailer, name: "Trailer", type: "Trailer" }] : []);
+    if (!vids.length) {
       open(`https://www.youtube.com/results?search_query=${encodeURIComponent(m.title + " official trailer")}`, "_blank", "noopener");
       return;
     }
-    $(".video", trailer).innerHTML =
-      `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(m.trailer)}?autoplay=1&rel=0"
-        title="${esc(m.title)} trailer" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
-    trailer.showModal();
+    playing = { m, vids };
+    $(".playlist", trailer).innerHTML = vids.length > 1
+      ? vids.map((v, i) => `<button type="button" data-video="${i}">${esc(v.name)}</button>`).join("") : "";
+    playVideo(index);
+    if (!trailer.open) trailer.showModal();
   }
-  trailer.addEventListener("close", () => { $(".video", trailer).innerHTML = ""; });
+  function playVideo(i) {
+    if (!playing) return;
+    const v = playing.vids[i] || playing.vids[0];
+    $(".video", trailer).innerHTML =
+      `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.key)}?autoplay=1&rel=0"
+        title="${esc(playing.m.title)} — ${esc(v.name)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+    $$(".playlist button", trailer).forEach((b) => b.classList.toggle("active", +b.dataset.video === i));
+  }
+  trailer.addEventListener("close", () => { $(".video", trailer).innerHTML = ""; playing = null; });
   $(".close", trailer).addEventListener("click", () => trailer.close());
   trailer.addEventListener("click", (e) => { if (e.target === trailer) trailer.close(); });
 
@@ -424,6 +473,10 @@
   // Solid nav after scrolling
   const onScroll = () => nav.classList.toggle("solid", scrollY > 40);
   addEventListener("scroll", onScroll, { passive: true });
+
+  if (DATA.updated) {
+    $("#updated").textContent = `Last updated ${new Date(DATA.updated).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`;
+  }
 
   route();
   onScroll();

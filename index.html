@@ -26,13 +26,15 @@
 
   <footer class="footer">
     <p>Release dates change often — always check with your local cinema.</p>
-    <p class="muted">Movie Countdown · a fan-made site</p>
+    <p class="muted">Movie data, images and trailer links from <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>. This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+    <p class="muted" id="updated"></p>
   </footer>
 
   <!-- Trailer modal -->
   <dialog id="trailer" class="trailer">
     <button class="close" type="button" aria-label="Close trailer">✕</button>
     <div class="video"></div>
+    <div class="playlist"></div>
   </dialog>
 
   <!-- Add movie -->
@@ -57,7 +59,7 @@
 
   <div class="toast" id="toast" role="status" hidden></div>
 
-  <script src="data.js"></script>
+  <script src="movies.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

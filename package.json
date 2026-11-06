@@ -1,0 +1,11 @@
+{
+  "name": "movie-countdown",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "update": "node scripts/update-movies.mjs"
+  },
+  "dependencies": {
+    "jpeg-js": "0.4.4"
+  }
+}
