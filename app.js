@@ -117,7 +117,7 @@
     return `
       <a class="card" href="#/movie/${encodeURIComponent(m.id)}" style="${theme(m)}">
         <div class="card-art ${art ? "has-img" : ""}" style="background-image:${esc(img(art))}">
-          ${titleArt(m, "card-title")}
+          ${m.artHasTitle ? "" : titleArt(m, "card-title")}
           ${badge}
         </div>
         <div class="card-info">

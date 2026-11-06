@@ -407,8 +407,12 @@ dialog::backdrop { background: rgba(0,0,0,.8); backdrop-filter: blur(4px); }
   background: linear-gradient(0deg, rgba(0,0,0,.85) 0%, transparent 60%);
 }
 .card-art.has-img .card-title { position: relative; z-index: 1; text-align: left; font-size: clamp(13px, 1.2vw, 16px); }
-.card-art .card-title.logo { position: relative; z-index: 1; max-width: 70%; max-height: 46%; object-fit: contain; object-position: left bottom; }
-.card-art:not(.has-img) .card-title.logo { object-position: center; }
+.card-art .card-title.logo {
+  position: absolute; z-index: 1; left: 12px; bottom: 10px;
+  width: 62%; height: 42%; object-fit: contain; object-position: left bottom;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,.6));
+}
+.card-art:not(.has-img) .card-title.logo { left: 19%; bottom: 29%; object-position: center; }
 .tag { z-index: 2; }
 
 .person-photo.has-img { background-position: center 20%; }

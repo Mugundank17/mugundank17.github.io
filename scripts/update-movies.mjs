@@ -152,7 +152,7 @@ async function palette(url) {
     const dist = (a, b) => Math.min(Math.abs(a - b), 36 - Math.abs(a - b));
     const second = order.find(([s, i]) => dist(i, first) >= 4 && s > order[0][0] * 0.15);
     const h1 = hueOf(first);
-    const h2 = second ? hueOf(second[1]) : (h1 + 30) % 360;
+    const h2 = second ? hueOf(second[1]) : (h1 + 345) % 360; // no 2nd colour: use a warmer neighbour
     return [h1, h2];
   } catch {
     return null;
@@ -169,7 +169,8 @@ async function build(id, pinned) {
   const date = releaseDate(d);
   if (!date) return null;
 
-  const backdropPath = bestImage(d.images?.backdrops?.filter((b) => b.iso_639_1 === null), d.backdrop_path) || d.backdrop_path;
+  const textless = bestImage(d.images?.backdrops?.filter((b) => b.iso_639_1 === null), null);
+  const backdropPath = textless || d.backdrop_path;
   const posterPath = bestImage(d.images?.posters, d.poster_path);
   const logoPath = bestImage(d.images?.logos?.filter((l) => !l.file_path.endsWith(".svg")), null);
   const directors = (d.credits?.crew || []).filter((c) => c.job === "Director").map((c) => c.name);
@@ -190,6 +191,7 @@ async function build(id, pinned) {
     backdrop: backdropPath ? `${IMG}/w1280${backdropPath}` : null,
     card: backdropPath ? `${IMG}/w780${backdropPath}` : null,
     logo: logoPath ? `${IMG}/w500${logoPath}` : null,
+    artHasTitle: !textless && !!backdropPath, // backdrop already shows the title
     hue: (backdropPath && (await palette(`${IMG}/w300${backdropPath}`))) ||
          (posterPath && (await palette(`${IMG}/w185${posterPath}`))) || [20, 40],
     trailers: trailers(d),
