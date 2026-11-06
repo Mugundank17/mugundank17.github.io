@@ -1,9 +1,14 @@
 # Movie Countdown
 
-A static site with live countdowns to upcoming movie releases. Hosted on GitHub Pages.
+A cinematic, streaming-style website with live countdowns to upcoming movie releases. Plain HTML/CSS/JS — no build step — hosted on GitHub Pages.
 
-- Add, edit and delete movies (saved in your browser)
-- "Next up" hero countdown, search, and Upcoming / Released / All filters
-- Share a countdown with a link (`?title=...&date=YYYY-MM-DD`)
+- **Home:** billboard for the next release, plus scrollable rows (Next to Release, Coming Soon, by year, Out Now, My Countdowns)
+- **Movie pages** (`#/movie/<id>`): fiery animated backdrop, big glowing title, live countdown, Get Tickets / Watch Trailer / Add to calendar
+- **Cast carousel** for each movie
+- **+ Add** your own countdowns (saved in your browser)
 
-Open `index.html` locally, or visit https://mugundank17.github.io once Pages is enabled.
+## Editing movies
+
+All movies live in `data.js`. Each entry can include `backdrop`, `poster`, `trailer` (YouTube id), `tickets` and cast `photo` fields — put images in an `images/` folder and reference them like `"images/dune.jpg"`. Without images, the site generates artwork from each movie's `hue` colours.
+
+Release dates change often, so check them before publishing.
