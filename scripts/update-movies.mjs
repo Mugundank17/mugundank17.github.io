@@ -120,6 +120,12 @@ const releasingIn = (region, n) => discover({
   "primary_release_date.gte": isoDaysFromNow(-365), with_release_type: "2|3",
 }, n);
 
+// Films with a streaming (digital) release coming up — or just out — in a country.
+const streamingIn = (region, n) => discover({
+  region, "release_date.gte": isoDaysFromNow(-21), "release_date.lte": isoDaysFromNow(365),
+  "primary_release_date.gte": isoDaysFromNow(-365), with_release_type: "4",
+}, n);
+
 // Popular upcoming films made in a country.
 const madeIn = (region, n) => discover({
   with_origin_country: region,
@@ -150,7 +156,8 @@ const TYPE_ORDER = [3, 2, 4, 1]; // theatrical, limited, digital, premiere
 
 function datesByCountry(d, rerelease) {
   const primary = d.release_date || "";
-  const dates = {}, certs = {};
+  const dates = {}, certs = {}, theatrical = {}, digital = {};
+  let premiere = null; // [date, note, country] — earliest premiere anywhere
   for (const r of d.release_dates?.results || []) {
     let entries = r.release_dates.map((x) => ({ ...x, day: x.release_date.slice(0, 10) }));
     const cert = entries.find((x) => x.certification)?.certification;
@@ -163,10 +170,24 @@ function datesByCountry(d, rerelease) {
       const days = entries.filter((x) => x.type === type).map((x) => x.day).sort();
       if (days.length) { dates[r.iso_3166_1] = days[0]; break; }
     }
+    const first = (types) => entries.filter((x) => types.includes(x.type)).map((x) => x.day).sort()[0];
+    const th = first([3, 2]);
+    if (th) theatrical[r.iso_3166_1] = th;
+    if (!rerelease) {
+      const dg = first([4]);
+      if (dg) digital[r.iso_3166_1] = dg;
+      for (const x of entries) {
+        if (x.type === 1 && (!premiere || x.day < premiere[0])) premiere = [x.day, (x.note || "").slice(0, 60), r.iso_3166_1];
+      }
+    }
   }
   // Local films often have no regional dates yet: use the primary date for their home country.
-  if (!rerelease && primary) for (const c of d.origin_country || []) dates[c] ||= primary;
-  return { dates, certs };
+  if (!rerelease && primary) {
+    for (const c of d.origin_country || []) {
+      if (!dates[c]) { dates[c] = primary; theatrical[c] ||= primary; }
+    }
+  }
+  return { dates, certs, theatrical, digital, premiere };
 }
 
 // "US20261218IN20261217…" — compact, since there can be 100+ countries per film.
@@ -239,12 +260,19 @@ async function palette(url) {
 // ---------- one movie ----------
 async function buildMovie(id, kind) {
   const d = await tmdb(`/movie/${id}`, {
-    append_to_response: "videos,credits,release_dates,images,translations",
+    append_to_response: "videos,credits,release_dates,images,translations,watch/providers",
     include_video_language: "en,null",
     include_image_language: "en,null",
   });
   if (!d.poster_path && !d.backdrop_path) return null;
-  const { dates, certs } = datesByCountry(d, kind === "rerelease");
+  const { dates, certs, theatrical, digital, premiere } = datesByCountry(d, kind === "rerelease");
+  // Streaming services per country (only the countries we rank, to keep the index small).
+  const ott = {};
+  for (const [cc, w] of Object.entries(d["watch/providers"]?.results || {})) {
+    if (!REGIONS.includes(cc)) continue;
+    const names = [...new Set((w.flatrate || []).map((p) => p.provider_name.replace(/ (Standard )?with Ads$/, "").replace(/ Amazon Channel$/, "")))];
+    if (names.length) ott[cc] = names.slice(0, 4);
+  }
   const sorted = Object.values(dates).sort();
   const date = kind === "rerelease" ? (dates[REGION] || sorted[0]) : (d.release_date || sorted[0]);
   if (!date) return null;
@@ -268,6 +296,10 @@ async function buildMovie(id, kind) {
     origin: d.origin_country || [],
     date,
     dates: packDates(dates),
+    th: packDates(theatrical),
+    dg: packDates(digital),
+    ...(premiere ? { premiere } : {}),
+    ...(Object.keys(ott).length ? { ott } : {}),
     certs,
     ...(kind === "rerelease" && d.release_date ? { originalDate: d.release_date } : {}),
     genres: (d.genres || []).map((g) => g.name),
@@ -282,6 +314,7 @@ async function buildMovie(id, kind) {
     director: directors.map((c) => c.name).join(" & "),
     people: cast.slice(0, 4).map((c) => c.name),
     video: vids[0] ? vids[0].type : null,
+    trailerDate: vids.map((v) => v.published).filter(Boolean).sort().pop() || null,
     hot: {},
   };
   const detail = {
@@ -356,9 +389,12 @@ for (const entry of config.movies || []) {
 
 const perRegion = config.perRegion ?? 15;
 await pool(REGIONS, 4, async (region) => {
-  const [rel, local] = await Promise.all([releasingIn(region, perRegion), madeIn(region, perRegion)]);
+  const [rel, local, stream] = await Promise.all([
+    releasingIn(region, perRegion), madeIn(region, perRegion), streamingIn(region, config.perRegionStreaming ?? 10),
+  ]);
   hot[region] = interleave(local, rel);
-  console.log(`  ${region}: ${rel.length} releasing there, ${local.length} made there`);
+  for (const id of stream) want(id, "auto");
+  console.log(`  ${region}: ${rel.length} releasing there, ${local.length} made there, ${stream.length} streaming`);
 });
 hot.WW = await worldwide(config.worldwide ?? 30);
 for (const r of [...REGIONS, "WW"]) for (const id of hot[r] || []) want(id, "auto");

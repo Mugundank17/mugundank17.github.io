@@ -20,7 +20,7 @@
     }
     return out;
   };
-  DATA.movies.forEach((m) => { m.dates = unpackDates(m.dates); });
+  DATA.movies.forEach((m) => { m.dates = unpackDates(m.dates); m.th = unpackDates(m.th); m.dg = unpackDates(m.dg); });
   const REGIONS = new Set(DATA.regions || []);
 
   let custom = loadCustom();
@@ -303,7 +303,7 @@
 
   // ---------- home ----------
   function renderHome() {
-    document.title = "Movie Countdown";
+    document.title = "Countdown — movie release countdowns";
     const top = anticipated();
     const hero = top[0] || upcomingHere()[0] || upcoming()[0] || released()[0];
     const here = esc(countryName(COUNTRY));
@@ -343,11 +343,19 @@
           <a class="btn btn-ghost" href="${calHref(dayKey(Date.now()))}">📅 Release calendar</a>
           ${scopeSwitch()}
         </div>
+        <nav class="chips home-filters" aria-label="Browse">
+          ${BROWSE_TABS.map(([k, label]) => `<a href="#/browse/${k}">${label}</a>`).join("")}
+          <a href="#/feed">📰 Feed</a>
+        </nav>
+        ${row("row-waiting", "⏳ Your Waiting Room", waitingMovies(), card, "", `<a class="row-link" href="#/browse/watchlist">See all ›</a>`)}
         ${row("row-top", `Top 10 Most Anticipated in ${rankKey() === "WW" ? "the World" : here}`, top.slice(0, 10), rankCard, "rail-ranked")}
         ${row("row-week", `Releasing This Week ${inHere}`, thisWeek, card, "",
           `<a class="row-link" href="${calHref(dayKey(Date.now()), "week")}">Open calendar ›</a>`)}
         ${row("row-upcoming", `Coming Soon ${inHere}`, upcomingHere().slice(0, 30))}
         ${rankKey() !== "WW" ? row("row-world", "Worldwide Most Anticipated", anticipated("WW").slice(0, 20)) : ""}
+        ${row("row-ott", `📺 Coming to Streaming ${inHere}`,
+          listed().filter((m) => dgDate(m) && parseDay(dgDate(m)) >= startOfDay()).sort((a, b) => parseDay(dgDate(a)) - parseDay(dgDate(b))).slice(0, 20),
+          card, "", `<a class="row-link" href="#/browse/ott">All OTT ›</a>`)}
         ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
         ${languageRows()}
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
@@ -366,15 +374,21 @@
     return ["US", "CA", "JP", "BR", "IN", "MX", "KR", "PH", "IL", "ZA", "AU"].includes(COUNTRY) ? 0 : 1;
   }
 
+  let calType = (() => { try { return localStorage.getItem("movie-countdown:caltype") || "all"; } catch (_) { return "all"; } })();
   function releasesByDay() {
     const map = new Map();
     for (const m of listed()) {
-      const k = dateStr(m);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(m);
+      for (const e of eventsFor(m, false)) {
+        if (calType !== "all" && !(e.type === calType || (calType === "cinema" && e.type === "rerelease"))) continue;
+        const k = dayKey(e.t);
+        if (!map.has(k)) map.set(k, []);
+        map.get(k).push(e);
+      }
     }
+    const order = { cinema: 0, rerelease: 1, stream: 2, premiere: 3 };
     for (const list of map.values()) {
-      list.sort((a, b) => datedHere(b) - datedHere(a) || (a.hot?.[rankKey()] || 999) - (b.hot?.[rankKey()] || 999));
+      list.sort((a, b) => (order[a.type] - order[b.type]) || datedHere(b.m) - datedHere(a.m) ||
+        (a.m.hot?.[rankKey()] || 999) - (b.m.hot?.[rankKey()] || 999));
     }
     return map;
   }
@@ -398,7 +412,8 @@
     return n;
   }
 
-  function calendarEntry(m) {
+  function calendarEntry(e) {
+    const m = e.m;
     const orig = origTitle(m);
     return `
       <a class="cal-item" href="${movieHref(m)}" style="${theme(m.hue)}">
@@ -407,20 +422,20 @@
           <strong>${esc(title(m))}</strong>
           ${orig ? `<span class="cal-orig">${esc(orig)}</span>` : ""}
           <span class="cal-meta">
+            <span class="pill pill-type t-${e.type}">${TYPES[e.type].icon} ${esc(evLabel(e))}</span>
             ${m.lang ? `<span class="pill">${esc(languageName(m.lang))}</span>` : ""}
-            ${isRe(m) ? `<span class="pill pill-re">Re-release</span>` : ""}
             ${m.certs?.[COUNTRY] ? `<span class="cert">${esc(m.certs[COUNTRY])}</span>` : ""}
-            ${datedHere(m) ? "" : `<span class="pill" title="No date announced in ${esc(countryName(COUNTRY))}">🌐 Worldwide date</span>`}
+            ${e.worldwide ? `<span class="pill" title="No date announced in ${esc(countryName(COUNTRY))}">🌐 Worldwide date</span>` : ""}
             ${m.genres?.length ? `<span>${m.genres.slice(0, 3).map(esc).join(" · ")}</span>` : ""}
           </span>
           ${m.people?.length ? `<span class="cal-people">${m.people.slice(0, 3).map(esc).join(", ")}</span>` : ""}
         </div>
-        <div class="cal-side">${countdown(m, "cd-mini")}</div>
+        <div class="cal-side">${countdownAt(e.t, "cd-mini", e.type === "stream" ? "Streaming now" : e.type === "premiere" ? "Premiered" : isRe(m) ? "Back in cinemas" : "Out now")}</div>
       </a>`;
   }
 
   function renderCalendar(selKey, mode = "day") {
-    document.title = "Release Calendar — Movie Countdown";
+    document.title = "Release Calendar — Countdown";
     const todayT = startOfDay();
     const selT = selKey && /^\d{4}-\d{2}-\d{2}$/.test(selKey) ? parseDay(selKey) : todayT;
     const sel = new Date(selT);
@@ -457,7 +472,7 @@
         <a class="${cls}" href="${calHref(k, mode)}" aria-label="${esc(longDate(t))}: ${plural(list.length, "release", "releases")}">
           <span class="cal-num">${d.getDate()}</span>
           ${list.length ? `<span class="cal-count">${list.length}</span>` : ""}
-          <span class="cal-thumbs">${list.slice(0, 3).map((m) => `<i style="${bg(m.poster)}"></i>`).join("")}</span>
+          <span class="cal-thumbs">${list.slice(0, 3).map((e) => `<i style="${bg(e.m.poster)}"></i>`).join("")}</span>
         </a>`;
     }
 
@@ -497,6 +512,10 @@
               <div class="seg">
                 ${["day", "week", "month"].map((x) => `<a class="${x === mode ? "active" : ""}" href="${calHref(dayKey(selT), x)}">${x[0].toUpperCase() + x.slice(1)}</a>`).join("")}
               </div>
+            </div>
+            <div class="chips cal-types">
+              ${[["all", "All"], ["cinema", "🎬 Cinemas"], ["stream", "📺 Streaming"], ["premiere", "🌟 Premieres"]].map(([k, l]) =>
+                `<button type="button" class="${calType === k ? "active" : ""}" data-caltype="${k}">${l}</button>`).join("")}
             </div>
             <div class="cal-grid">
               ${weekdayNames.map((w) => `<span class="cal-wd">${esc(w)}</span>`).join("")}
@@ -613,7 +632,7 @@
   let currentMovie = null;
   function renderMovie(m, token) {
     currentMovie = m;
-    document.title = `${title(m)} — Movie Countdown`;
+    document.title = `${title(m)} — Countdown`;
     if (m.tmdb && !m._loaded) {
       loadDetail(m).then(() => { if (token === routeToken && m._loaded) { const y = scrollY; renderMovie(m, token); scrollTo(0, y); } });
     }
@@ -643,6 +662,7 @@
             ${ticketBtn(m)}
             ${trailerBtn(m)}
           </div>
+          ${!isOut(m) ? `<div class="wr-join">${waitBtn(m, "btn btn-ghost btn-sm")}</div>` : ""}
           <div class="hero-links">
             <button class="link" type="button" data-ics="${esc(m.id)}">＋ Add to calendar</button>
             <a class="link" href="${calHref(dateStr(m))}">📅 See what else releases that day</a>
@@ -678,6 +698,10 @@
         <dl class="facts">
           <div><dt>${isWorld() ? "Worldwide release" : `Release in ${esc(countryName(COUNTRY))}`}</dt><dd>${datedHere(m) ? esc(longDate(time(m))) : "Not announced yet"}</dd></div>
           ${!datedHere(m) ? `<div><dt>Worldwide release</dt><dd>${esc(longDate(parseDay(m.date)))}</dd></div>` : ""}
+          ${thDate(m) && dgDate(m) ? `<div><dt>In cinemas</dt><dd>${esc(longDate(parseDay(thDate(m))))}</dd></div>` : ""}
+          ${dgDate(m) ? `<div><dt>Streaming / digital</dt><dd>${esc(longDate(parseDay(dgDate(m))))}${ottHere(m).length ? ` · ${ottHere(m).map(esc).join(", ")}` : ""}</dd></div>`
+            : ottHere(m).length ? `<div><dt>Streaming on</dt><dd>${ottHere(m).map(esc).join(", ")}</dd></div>` : ""}
+          ${premiereOf(m) ? `<div><dt>Premiere</dt><dd>${esc(longDate(premiereOf(m).t))}${premiereOf(m).note ? ` · ${esc(premiereOf(m).note)}` : ""}</dd></div>` : ""}
           ${isRe(m) && m.originalDate ? `<div><dt>Original release</dt><dd>${esc(longDate(parseDay(m.originalDate)))}</dd></div>` : ""}
           ${m.lang ? `<div><dt>Language</dt><dd>${esc(languageName(m.lang))}${m.origin?.length ? ` · ${m.origin.map((c) => esc(countryName(c))).join(", ")}` : ""}</dd></div>` : ""}
           ${cert ? `<div><dt>Rating</dt><dd><span class="cert">${esc(cert)}</span></dd></div>` : ""}
@@ -734,6 +758,10 @@
       </a>`;
   }
 
+  const followBtn = (p) => follows[p.id]
+    ? `<button class="btn btn-solid btn-sm follow on" type="button" data-follow="${p.id}">✓ Following</button>`
+    : `<button class="btn btn-outline btn-sm follow" type="button" data-follow="${p.id}">＋ Follow</button>`;
+
   function age(birthday, end) {
     const b = new Date(birthday), e = end ? new Date(end) : new Date();
     let a = e.getFullYear() - b.getFullYear();
@@ -742,7 +770,7 @@
   }
 
   function renderPersonPage(p) {
-    document.title = `${p.name} — Movie Countdown`;
+    document.title = `${p.name} — Countdown`;
     const now = Date.now();
     const credits = p.credits || [];
     const tOf = (f) => creditInfo(f, p.id).t;
@@ -772,6 +800,7 @@
           <div class="pinfo">
             ${p.dept ? `<p class="kicker">${esc(p.dept === "Acting" ? "Actor" : p.dept)}</p>` : ""}
             <h1 class="pname">${esc(p.name)}</h1>
+            ${followBtn(p)}
             <p class="pmeta">${[born, died, p.place ? esc(p.place) : ""].filter(Boolean).join(" · ")}</p>
             <div class="pstats">
               <div><b>${credits.length}</b><span>Films</span></div>
@@ -814,7 +843,7 @@
   }
 
   function renderFilmPage(p, f) {
-    document.title = `${f.title} — Movie Countdown`;
+    document.title = `${f.title} — Countdown`;
     const t = f.date ? parseDay(f.date) : null;
     const others = (p.credits || []).filter((x) => x.id !== f.id && x.poster).slice(0, 20);
     app.innerHTML = `
@@ -951,6 +980,392 @@
     }
   });
 
+
+  // =====================================================================
+  // Release types: cinema, streaming (OTT), premieres, trailers
+  // =====================================================================
+  const earliest = (map) => (map ? Object.values(map).sort()[0] || null : null);
+  const thDate = (m) => (isWorld() ? earliest(m.th) : m.th?.[COUNTRY]) || null;
+  const dgDate = (m) => (isWorld() ? earliest(m.dg) : m.dg?.[COUNTRY]) || null;
+  const ottHere = (m) => (isWorld() ? [...new Set(Object.values(m.ott || {}).flat())] : m.ott?.[COUNTRY] || []).slice(0, 4);
+  const premiereOf = (m) => (m.premiere ? { t: parseDay(m.premiere[0]), note: m.premiere[1], cc: m.premiere[2] } : null);
+  const isRegional = (m) => (isWorld() ? m.lang && m.lang !== "en" : !!m.origin?.includes(COUNTRY) && m.lang !== "en");
+
+  const TYPES = {
+    cinema: { icon: "🎬", label: "In cinemas" },
+    rerelease: { icon: "🔁", label: "Back in cinemas" },
+    stream: { icon: "📺", label: "Streaming" },
+    premiere: { icon: "🌟", label: "Premiere" },
+    trailer: { icon: "▶", label: "New trailer" },
+    milestone: { icon: "⏳", label: "Countdown" },
+  };
+
+  // Every dated event for one movie, in the visitor's country.
+  function eventsFor(m, withTrailers = true) {
+    const ev = [];
+    const th = thDate(m), dg = dgDate(m);
+    if (th) ev.push({ type: isRe(m) ? "rerelease" : "cinema", t: parseDay(th), m });
+    if (dg) {
+      const names = ottHere(m);
+      ev.push({ type: "stream", t: parseDay(dg), m, label: names.length ? `Streaming on ${names.join(", ")}` : "Streaming / digital release" });
+    }
+    if (!th && !dg && visible(m)) ev.push({ type: isRe(m) ? "rerelease" : "cinema", t: time(m), m, worldwide: !datedHere(m) });
+    const pr = premiereOf(m);
+    if (pr && !isRe(m)) ev.push({ type: "premiere", t: pr.t, m, label: pr.note ? `Premiere · ${pr.note}` : `Premiere in ${countryName(pr.cc)}` });
+    if (withTrailers && m.trailerDate) ev.push({ type: "trailer", t: parseDay(m.trailerDate), m });
+    return ev;
+  }
+  const evLabel = (e) => e.label || (e.type === "cinema" && e.worldwide ? "Worldwide release" : TYPES[e.type].label);
+
+  // =====================================================================
+  // Personal lists: waiting room + followed people (stored in this browser)
+  // =====================================================================
+  const WAIT_KEY = "movie-countdown:waiting";
+  const FOLLOW_KEY = "movie-countdown:follow";
+  const readJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || "") || d; } catch (_) { return d; } };
+  const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* ignore */ } };
+  let waiting = readJSON(WAIT_KEY, {});   // movie id -> joined timestamp
+  let follows = readJSON(FOLLOW_KEY, {}); // person id -> { name, photo, dept }
+  const isWaiting = (m) => !!waiting[m.id];
+  const waitingMovies = () => all().filter(isWaiting).sort(byDate);
+  const followedNames = () => new Set(Object.values(follows).map((p) => norm(p.name)));
+  const byFollowed = (m) => {
+    const names = followedNames();
+    if (!names.size) return false;
+    return [m.director || "", ...(m.people || [])].some((n) => n.split(" & ").some((x) => names.has(norm(x))));
+  };
+
+  function toggleWaiting(m) {
+    if (isWaiting(m)) { delete waiting[m.id]; toast("Left the waiting room"); }
+    else { waiting[m.id] = Date.now(); toast(`You're in the waiting room for ${title(m)}`); }
+    writeJSON(WAIT_KEY, waiting);
+  }
+  function toggleFollow(p) {
+    if (follows[p.id]) { delete follows[p.id]; toast(`Unfollowed ${p.name}`); }
+    else { follows[p.id] = { name: p.name, photo: p.thumb || p.photo || null, dept: p.dept || "" }; toast(`Following ${p.name} — their films appear in your feed`); }
+    writeJSON(FOLLOW_KEY, follows);
+  }
+  const waitBtn = (m, cls = "btn btn-ghost") => isWaiting(m)
+    ? `<a class="${cls} joined" href="#/wait/${encodeURIComponent(m.id)}">⏳ Enter waiting room</a>`
+    : `<button class="${cls}" type="button" data-wait="${esc(m.id)}">⏳ Join waiting room</button>`;
+
+  // =====================================================================
+  // Poster grid card (Browse pages)
+  // =====================================================================
+  function gridCard(m, e) {
+    const t = e ? e.t : time(m);
+    const names = ottHere(m);
+    return `
+      <a class="gcard" href="${movieHref(m)}" style="${theme(m.hue)}">
+        <div class="gcard-art" style="${bg(m.poster || m.card)}">
+          ${e ? `<span class="tag tag-type t-${e.type}">${TYPES[e.type].icon} ${esc(e.type === "stream" && names.length ? names[0] : TYPES[e.type].label)}</span>` : ""}
+          ${m.lang && m.lang !== "en" ? `<span class="tag tag-lang">${esc(languageName(m.lang))}</span>` : ""}
+        </div>
+        <strong>${esc(title(m))}</strong>
+        ${origTitle(m) ? `<span class="gcard-orig">${esc(origTitle(m))}</span>` : ""}
+        <span class="gcard-meta">${esc(shortDate(t))}${m.certs?.[COUNTRY] ? ` · ${esc(m.certs[COUNTRY])}` : ""}</span>
+        ${e?.type === "premiere" && e.label ? `<span class="gcard-note">${esc(e.label.replace(/^Premiere · /, ""))}</span>` : ""}
+        ${countdownAt(t, "cd-mini", e?.type === "stream" ? "Streaming now" : e?.type === "premiere" ? "Premiered" : "Out now")}
+      </a>`;
+  }
+  const gridSection = (heading, items, extra = "") => (items.length ? `
+    <section class="gsection"><div class="row-head"><h2 class="row-title">${heading}</h2>${extra}</div>
+      <div class="ggrid">${items.map(([m, e]) => gridCard(m, e)).join("")}</div></section>` : "");
+
+  // =====================================================================
+  // Browse: Theatrical · OTT · Premieres · Regional · Watchlist
+  // =====================================================================
+  const BROWSE_TABS = [
+    ["theatrical", "🎬 Theatrical"], ["ott", "📺 OTT"], ["premieres", "🌟 Premieres"],
+    ["regional", "🗺 Regional"], ["watchlist", "⭐ My Watchlist"],
+  ];
+  let browseSub = "";
+
+  function renderBrowse(tab = "theatrical", sub = "") {
+    if (!BROWSE_TABS.some(([k]) => k === tab)) tab = "theatrical";
+    browseSub = sub;
+    document.title = `${BROWSE_TABS.find(([k]) => k === tab)[1].replace(/^\S+ /, "")} — Countdown`;
+    const now = Date.now(), today = startOfDay();
+    const inHere = isWorld() ? "worldwide" : `in ${esc(countryName(COUNTRY))}`;
+    const pairs = (type) => listed().flatMap((m) => eventsFor(m, false).filter((e) => e.type === type).map((e) => [m, e]));
+    let body = "", chips = "";
+
+    if (tab === "theatrical") {
+      const ev = [...pairs("cinema"), ...pairs("rerelease")].filter(([, e]) => !e.worldwide);
+      body = gridSection(`Coming to cinemas ${inHere}`, ev.filter(([, e]) => e.t >= today).sort((a, b) => a[1].t - b[1].t)) +
+        gridSection(`In cinemas now ${inHere}`, ev.filter(([, e]) => e.t < today && e.t > now - 35 * DAY).sort((a, b) => b[1].t - a[1].t));
+    }
+
+    if (tab === "ott") {
+      const ev = pairs("stream");
+      const withProv = listed().filter((m) => ottHere(m).length);
+      const counts = {};
+      for (const m of new Set([...ev.map(([m]) => m), ...withProv])) for (const n of ottHere(m)) counts[n] = (counts[n] || 0) + 1;
+      const provs = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([n]) => n);
+      chips = `<div class="chips browse-chips">
+        <a class="${!sub ? "active" : ""}" href="#/browse/ott">All services</a>
+        ${provs.map((n) => `<a class="${sub === n ? "active" : ""}" href="#/browse/ott/${encodeURIComponent(n)}">${esc(n)}</a>`).join("")}
+      </div>`;
+      const match = (m) => !sub || ottHere(m).includes(sub);
+      const upcomingStream = ev.filter(([m, e]) => e.t >= today && match(m)).sort((a, b) => a[1].t - b[1].t);
+      const nowStreaming = [
+        ...ev.filter(([m, e]) => e.t < today && match(m)).sort((a, b) => b[1].t - a[1].t),
+        ...withProv.filter((m) => match(m) && !ev.some(([x]) => x === m)).map((m) => [m, { type: "stream", t: parseDay(dgDate(m) || m.date), m }]),
+      ];
+      body = gridSection(`Coming to streaming ${inHere}${sub ? ` · ${esc(sub)}` : ""}`, upcomingStream) +
+        gridSection(`Streaming now ${inHere}${sub ? ` · ${esc(sub)}` : ""}`, nowStreaming.slice(0, 40)) +
+        (!upcomingStream.length && !nowStreaming.length ? `<div class="cal-empty">No streaming releases on our list ${inHere} yet.</div>` : "") +
+        `<p class="muted small browse-note">Streaming services come from TMDB / JustWatch and are usually listed once a film is available. Dates are the digital release in your country.</p>`;
+    }
+
+    if (tab === "premieres") {
+      const ev = pairs("premiere");
+      body = gridSection("Upcoming premieres", ev.filter(([, e]) => e.t >= today).sort((a, b) => a[1].t - b[1].t)) +
+        gridSection("Recent premieres", ev.filter(([, e]) => e.t < today && e.t > now - 120 * DAY).sort((a, b) => b[1].t - a[1].t)) +
+        `<p class="muted small browse-note">World premieres and festival screenings (Venice, Toronto, Cannes, Busan…) — usually before the public release.</p>`;
+    }
+
+    if (tab === "regional") {
+      const films = upcoming().filter(isRegional);
+      const langs = {};
+      for (const m of films) langs[m.lang] = (langs[m.lang] || 0) + 1;
+      const order = Object.entries(langs).sort((a, b) => b[1] - a[1]).map(([l]) => l);
+      chips = `<div class="chips browse-chips">
+        <a class="${!sub ? "active" : ""}" href="#/browse/regional">All languages</a>
+        ${order.map((l) => `<a class="${sub === l ? "active" : ""}" href="#/browse/regional/${l}">${esc(languageName(l))} <small>${langs[l]}</small></a>`).join("")}
+      </div>`;
+      const pick = films.filter((m) => !sub || m.lang === sub).map((m) => [m, null]);
+      const heading = isWorld() ? "World cinema — films not in English" : `Regional cinema from ${esc(countryName(COUNTRY))}`;
+      body = gridSection(`${heading}${sub ? ` · ${esc(languageName(sub))}` : ""}`, pick) ||
+        `<div class="cal-empty">No upcoming local-language films on our list for ${esc(countryName(COUNTRY))} yet.</div>`;
+    }
+
+    if (tab === "watchlist") {
+      const wm = waitingMovies();
+      const people = Object.entries(follows);
+      body = `
+        ${wm.length ? gridSection("⏳ Your waiting room", wm.map((m) => [m, null]))
+          : `<div class="empty-card"><h3>⏳ Your waiting room is empty</h3><p>Open any movie and tap <b>Join waiting room</b> to count down together with its own page.</p></div>`}
+        <section class="gsection">
+          <div class="row-head"><h2 class="row-title">Directors &amp; actors you follow</h2></div>
+          ${people.length ? `<div class="follow-list">${people.map(([id, p]) => `
+            <a class="sp" href="${personHref(id)}">
+              <span class="sp-photo" style="${bg(p.photo)}">${p.photo ? "" : esc(initials(p.name))}</span>
+              <strong>${esc(p.name)}</strong><span>${esc(p.dept === "Directing" ? "Director" : p.dept === "Acting" ? "Actor" : p.dept)}</span>
+            </a>`).join("")}</div>`
+            : `<div class="empty-card"><h3>Follow your favourite directors and actors</h3><p>Open anyone's profile and tap <b>＋ Follow</b>. Their upcoming films show up here and in your feed.</p>
+                <button class="btn btn-solid btn-sm" type="button" data-open-search>🔍 Find people</button></div>`}
+        </section>
+        <div id="followFilms">${people.length ? `<div class="loading-strip"><div class="spinner"></div></div>` : ""}</div>`;
+    }
+
+    app.innerHTML = `
+      <section class="browse">
+        <header class="browse-head">
+          <p class="kicker">Browse · ${esc(countryName(COUNTRY))}</p>
+          <h1 class="cal-title">${esc(BROWSE_TABS.find(([k]) => k === tab)[1].replace(/^\S+ /, ""))}</h1>
+          ${scopeSwitch()}
+        </header>
+        <nav class="tabs">${BROWSE_TABS.map(([k, label]) => `<a class="${k === tab ? "active" : ""}" href="#/browse/${k}">${label}</a>`).join("")}</nav>
+        ${chips}
+        ${body}
+      </section>`;
+
+    if (tab === "watchlist" && Object.keys(follows).length) loadFollowedFilms();
+  }
+
+  // Upcoming films of everyone you follow (loads their profiles).
+  async function loadFollowedFilms() {
+    const token = routeToken;
+    const people = await Promise.all(Object.keys(follows).map((id) => loadPerson(id).catch(() => null)));
+    if (token !== routeToken) return;
+    const seen = new Set(), items = [];
+    for (const p of people.filter(Boolean)) {
+      for (const f of p.credits || []) {
+        const c = creditInfo(f, p.id);
+        if ((c.t === null || c.t > Date.now()) && !seen.has(f.id)) { seen.add(f.id); items.push({ f, p, c }); }
+      }
+    }
+    items.sort((a, b) => (a.c.t ?? Infinity) - (b.c.t ?? Infinity));
+    const el = $("#followFilms");
+    if (!el) return;
+    el.innerHTML = items.length ? `
+      <section class="gsection"><div class="row-head"><h2 class="row-title">Their upcoming films</h2></div>
+        <div class="ggrid">${items.slice(0, 60).map(({ f, p }) => pcard(f, p.id).replace('class="pcard"', 'class="pcard in-grid"')).join("")}</div></section>`
+      : `<div class="empty-card"><p>No upcoming films announced yet for the people you follow.</p></div>`;
+  }
+
+  // =====================================================================
+  // Feed: what's coming next
+  // =====================================================================
+  const FEED_FILTERS = [["all", "All"], ["foryou", "⭐ For you"], ["cinema", "🎬 Cinemas"], ["stream", "📺 Streaming"], ["premiere", "🌟 Premieres"], ["trailer", "▶ Trailers"]];
+  const relTime = (t) => {
+    const d = Math.round((startOfDay(t) - startOfDay()) / DAY);
+    try {
+      return new Intl.RelativeTimeFormat(LANG, { numeric: "auto" }).format(d, "day");
+    } catch (_) { return d === 0 ? "today" : d > 0 ? `in ${d} days` : `${-d} days ago`; }
+  };
+
+  function renderFeed(filter = "all") {
+    document.title = "Feed — Countdown";
+    const now = Date.now(), today = startOfDay();
+    const from = today - 14 * DAY, to = today + 180 * DAY;
+    let events = [];
+    for (const m of listed()) {
+      for (const e of eventsFor(m)) {
+        if (e.t < from || e.t > to) continue;
+        if (e.type === "trailer" && e.t > now) continue;
+        e.mine = isWaiting(m) || byFollowed(m);
+        events.push(e);
+      }
+      // Milestones for films in your waiting room.
+      if (isWaiting(m) && !isOut(m)) {
+        for (const d of [100, 50, 30, 14, 7, 3, 1]) {
+          const t = time(m) - d * DAY;
+          if (t >= from && t <= to) events.push({ type: "milestone", t, m, mine: true, label: `${d} ${d === 1 ? "day" : "days"} to go` });
+        }
+      }
+    }
+    if (filter === "foryou") events = events.filter((e) => e.mine);
+    else if (filter !== "all") events = events.filter((e) => e.type === filter || (filter === "cinema" && e.type === "rerelease"));
+
+    const rank = (e) => e.m.hot?.[rankKey()] || 999;
+    const buckets = [
+      ["Just dropped", (e) => e.t < today, (a, b) => b.t - a.t],
+      ["Today", (e) => e.t >= today && e.t < today + DAY],
+      ["Tomorrow", (e) => e.t >= today + DAY && e.t < today + 2 * DAY],
+      ["This week", (e) => e.t >= today + 2 * DAY && e.t < today + 7 * DAY],
+      ["This month", (e) => e.t >= today + 7 * DAY && e.t < today + 30 * DAY],
+      ["Coming up", (e) => e.t >= today + 30 * DAY],
+    ];
+    const mineCount = events.filter((e) => e.mine).length;
+
+    const item = (e) => {
+      const m = e.m;
+      return `
+        <article class="feed-item ${e.mine ? "mine" : ""}" style="${theme(m.hue)}">
+          <span class="fi-icon t-${e.type}">${TYPES[e.type].icon}</span>
+          <a class="fi-poster" href="${movieHref(m)}" style="${bg(m.poster || m.card)}" aria-label="${esc(title(m))}"></a>
+          <div class="fi-body">
+            <p class="fi-when">${esc(relTime(e.t))} · ${esc(shortDate(e.t))}${e.mine ? ` · <span class="fi-mine">${isWaiting(m) ? "In your waiting room" : "From people you follow"}</span>` : ""}</p>
+            <a class="fi-title" href="${movieHref(m)}">${esc(title(m))}</a>
+            <p class="fi-label">${esc(evLabel(e))}${m.lang && m.lang !== "en" ? ` · ${esc(languageName(m.lang))}` : ""}${rank(e) <= 10 ? ` · 🔥 #${rank(e)} most anticipated` : ""}</p>
+            <div class="fi-actions">
+              ${e.type === "trailer" ? `<button class="btn btn-solid btn-sm" type="button" data-trailer="${esc(m.id)}">▶ Watch trailer</button>` : ""}
+              ${e.type === "stream" && e.t < now ? "" : e.t > now ? countdownAt(e.t, "cd-mini") : ""}
+              ${!isOut(m) ? waitBtn(m, "btn btn-ghost btn-sm") : ""}
+            </div>
+          </div>
+        </article>`;
+    };
+
+    const sections = buckets.map(([name, test, sort]) => {
+      const list = events.filter(test).sort(sort || ((a, b) => a.t - b.t || (b.mine - a.mine) || rank(a) - rank(b)));
+      return list.length ? `<h2 class="feed-bucket">${name} <span>${list.length}</span></h2>${list.slice(0, name === "Coming up" ? 40 : 60).map(item).join("")}` : "";
+    }).join("");
+
+    app.innerHTML = `
+      <section class="feed">
+        <header class="browse-head">
+          <p class="kicker">What's next · ${esc(countryName(COUNTRY))}</p>
+          <h1 class="cal-title">Your feed</h1>
+          ${scopeSwitch()}
+        </header>
+        <div class="chips browse-chips">${FEED_FILTERS.map(([k, label]) =>
+          `<a class="${k === filter ? "active" : ""}" href="#/feed${k === "all" ? "" : "/" + k}">${label}${k === "foryou" && mineCount ? ` <small>${mineCount}</small>` : ""}</a>`).join("")}</div>
+        ${filter === "foryou" && !mineCount ? `<div class="empty-card"><h3>Make this feed yours</h3>
+          <p>Join a movie's <b>waiting room</b> or <b>follow</b> directors and actors — their releases, trailers and countdown milestones appear here.</p>
+          <a class="btn btn-solid btn-sm" href="#/browse/watchlist">⭐ My Watchlist</a></div>` : ""}
+        <div class="feed-list">${sections || (filter === "foryou" ? "" : `<div class="cal-empty">Nothing here yet.</div>`)}</div>
+      </section>`;
+  }
+
+  // =====================================================================
+  // Waiting room
+  // =====================================================================
+  let slideTimer = null;
+  function renderWaitingRoom(m, token) {
+    document.title = `Waiting for ${title(m)} — Countdown`;
+    if (m.tmdb && !m._loaded) loadDetail(m).then(() => { if (token === routeToken) renderWaitingRoom(m, token); });
+    const joined = waiting[m.id];
+    const t = time(m), now = Date.now();
+    const out = t <= now;
+    const start = joined || now;
+    const pct = out ? 100 : Math.max(0, Math.min(100, ((now - start) / Math.max(1, t - start)) * 100));
+    const daysWaited = joined ? Math.floor((now - joined) / DAY) : 0;
+    const left = Math.ceil((t - now) / DAY);
+    const slides = (m.artwork?.backdrops || []).slice(0, 8).map(([p]) => `${IMG}/w1280${p}`);
+    if (!slides.length && m.backdrop) slides.push(m.backdrop);
+    const milestones = [100, 50, 30, 14, 7, 3, 1].filter((d) => t - d * DAY > (joined || now) - 365 * DAY);
+
+    app.innerHTML = `
+      <section class="wroom cine" style="${theme(m.hue)}">
+        <div class="wr-slides" aria-hidden="true">${slides.map((u, i) => `<div class="wr-slide ${i === 0 ? "on" : ""}" style="${bg(u)}"></div>`).join("")}</div>
+        ${fireLayers(null, orb)}
+        <div class="wr-body">
+          <p class="kicker">⏳ Waiting room</p>
+          ${m.logo && !TR[m.tmdb]?.title ? `<img class="wr-logo" src="${esc(m.logo)}" alt="${esc(title(m))}">` : `<h1 class="mega" style="--len:${longestWord(title(m))}">${esc(title(m))}</h1>`}
+          <p class="tagline">${out ? "🎉 It's here!" : `${esc(isRe(m) ? "Back in cinemas" : "Releases")} ${esc(longDate(t))}${datedHere(m) ? ` in ${esc(countryName(COUNTRY))}` : ""}`}</p>
+          ${out ? `<div class="wr-out">The wait is over. Enjoy the movie!</div>` : countdownAt(t, "cd-hero")}
+          <div class="wr-progress" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100">
+            <div class="wr-bar"><span style="width:${pct.toFixed(1)}%"></span></div>
+            <p>${joined ? `You joined ${daysWaited === 0 ? "today" : `${plural(daysWaited, "day", "days")} ago`} · ${Math.round(pct)}% of your wait done` : "Join to track your wait"}${!out ? ` · ${plural(left, "day", "days")} to go` : ""}</p>
+          </div>
+          ${!out ? `<div class="wr-miles">${milestones.map((d) => `<span class="${left <= d ? "done" : ""}">${left <= d ? "✓ " : ""}${d} ${d === 1 ? "day" : "days"}</span>`).join("")}</div>` : ""}
+          <div class="cta cta-center">
+            ${out ? ticketBtn(m, "btn btn-solid") : ""}
+            ${trailerBtn(m)}
+            <button class="btn btn-outline" type="button" data-share="${esc(m.id)}">↗ Invite friends</button>
+            ${joined ? "" : `<button class="btn btn-solid" type="button" data-wait="${esc(m.id)}">⏳ Join this waiting room</button>`}
+          </div>
+          <div class="hero-links">
+            <button class="link" type="button" data-ics="${esc(m.id)}">＋ Add release day to calendar</button>
+            ${"Notification" in window && !out ? `<button class="link" type="button" data-notify="${esc(m.id)}">🔔 Alert me at release (keep this page open)</button>` : ""}
+            <a class="link" href="${movieHref(m)}">ⓘ Movie details</a>
+            ${joined ? `<button class="link" type="button" data-wait="${esc(m.id)}">Leave waiting room</button>` : ""}
+          </div>
+        </div>
+      </section>`;
+    startEmbers($(".wroom canvas"), m.hue, 0.9);
+    clearInterval(slideTimer);
+    if (slides.length > 1) {
+      let i = 0;
+      slideTimer = setInterval(() => {
+        const els = $$(".wr-slide");
+        if (!els.length) return clearInterval(slideTimer);
+        els[i].classList.remove("on"); i = (i + 1) % els.length; els[i].classList.add("on");
+      }, 7000);
+    }
+  }
+
+  async function shareMovie(m) {
+    const url = `${location.origin}${location.pathname}#/wait/${encodeURIComponent(m.id)}`;
+    const text = `⏳ ${title(m)} — ${isOut(m) ? "out now" : `${Math.ceil((time(m) - Date.now()) / DAY)} days to go`}! Join the waiting room:`;
+    try {
+      if (navigator.share) await navigator.share({ title: title(m), text, url });
+      else { await navigator.clipboard.writeText(`${text} ${url}`); toast("Link copied — share it with friends"); }
+    } catch (_) { /* cancelled */ }
+  }
+
+  // Release-time alert while the page is open.
+  const alerts = new Set();
+  async function armAlert(m) {
+    if (!("Notification" in window)) return;
+    const perm = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+    if (perm !== "granted") return toast("Notifications are blocked in this browser");
+    alerts.add(m.id);
+    toast("We'll alert you the moment it releases — keep this tab open");
+  }
+  setInterval(() => {
+    for (const id of alerts) {
+      const m = all().find((x) => x.id === id);
+      if (m && isOut(m)) {
+        alerts.delete(id);
+        try { new Notification(`${title(m)} is out now! 🎉`, { body: "Your wait is over.", icon: m.poster || undefined }); } catch (_) { /* ignore */ }
+      }
+    }
+  }, 1000);
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1036,11 +1451,20 @@
     const token = ++routeToken;
     const h = decodeURIComponent(location.hash);
     let m;
-    $$(".nav-links a").forEach((a) => a.classList.toggle("active", a.dataset.section === section(h)));
+    const sec = h.startsWith("#/browse/watchlist") ? "watchlist" : section(h);
+    $$(".nav-links a, .tabbar a").forEach((a) => a.classList.toggle("active", a.dataset.section === sec ||
+      (a.dataset.section === "browse" && sec === "watchlist" && a.closest(".nav-links"))));
 
     if ((m = h.match(/^#\/movie\/(.+)$/))) {
       const movie = all().find((x) => x.id === m[1]);
       return movie ? renderMovie(movie, token) : renderHome();
+    }
+    clearInterval(slideTimer);
+    if ((m = h.match(/^#\/browse(?:\/(\w+))?(?:\/(.+))?$/))) return renderBrowse(m[1], m[2] || "");
+    if ((m = h.match(/^#\/feed(?:\/(\w+))?$/))) return renderFeed(m[1] || "all");
+    if ((m = h.match(/^#\/wait\/(.+)$/))) {
+      const movie = all().find((x) => x.id === m[1]);
+      return movie ? renderWaitingRoom(movie, token) : renderMessage("Waiting room not found", "This movie isn't on our list any more.");
     }
     if ((m = h.match(/^#\/calendar(?:\/(\d{4}-\d{2}-\d{2}))?(?:\/(week|month))?$/))) {
       return renderCalendar(m[1], m[2] || "day");
@@ -1119,6 +1543,37 @@
     }
 
     if (t.closest("[data-open-location]")) return openLocation();
+
+    const w = t.closest("[data-wait]");
+    if (w) {
+      const m = all().find((x) => x.id === w.dataset.wait);
+      if (!m) return;
+      const wasIn = isWaiting(m);
+      toggleWaiting(m);
+      if (!wasIn && section(location.hash) !== "wait") { location.hash = `#/wait/${encodeURIComponent(m.id)}`; return; }
+      const y = scrollY; route(); scrollTo(0, y);
+      return;
+    }
+    const sh = t.closest("[data-share]");
+    if (sh) { const m = all().find((x) => x.id === sh.dataset.share); if (m) shareMovie(m); return; }
+    const nt = t.closest("[data-notify]");
+    if (nt) { const m = all().find((x) => x.id === nt.dataset.notify); if (m) armAlert(m); return; }
+    const fl = t.closest("[data-follow]");
+    if (fl) {
+      loadPerson(fl.dataset.follow).then((p) => {
+        toggleFollow(p);
+        fl.outerHTML = followBtn(p);
+      });
+      return;
+    }
+
+    const ct = t.closest("[data-caltype]");
+    if (ct) {
+      calType = ct.dataset.caltype;
+      try { localStorage.setItem("movie-countdown:caltype", calType); } catch (_) { /* ignore */ }
+      const y = scrollY; route(); scrollTo(0, y);
+      return;
+    }
 
     const scope = t.closest("[data-scope]");
     if (scope) return setCountry(scope.dataset.scope);

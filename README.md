@@ -1,4 +1,4 @@
-# Movie Countdown
+# Countdown
 
 A cinematic, streaming-style website with live countdowns to upcoming movie releases. Movie data, posters, backdrops, cast photos and official YouTube trailers/teasers are pulled automatically from [TMDB](https://www.themoviedb.org) every day.
 
@@ -23,6 +23,9 @@ A cinematic, streaming-style website with live countdowns to upcoming movie rele
 - **Search** with All / Movies / Actors / Directors filters.
 - **Get Tickets** — ticket sites for the visitor's city.
 - **Artwork** — official posters, backdrops and logos to download in full resolution.
+- **Browse** (`#/browse/…`) — Theatrical, OTT (by streaming service), Premieres (festivals), Regional cinema (by language), My Watchlist.
+- **Feed** (`#/feed`) — what's next: cinema and streaming releases, premieres, new trailers and countdown milestones; "For you" shows your waiting rooms and the people you follow.
+- **Waiting room** (`#/wait/<movie>`) — a full-screen countdown you join for a movie, with your wait progress, milestones, trailers and an invite link. Waiting rooms and follows are saved in the visitor's browser.
 
 ## Setup
 
