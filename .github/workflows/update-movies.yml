@@ -1,24 +1,24 @@
 name: Update movies & deploy
 
+# Builds fresh movie data from TMDB and publishes the site to GitHub Pages.
+# The data is generated on every run and deployed directly — it is not committed.
 on:
   schedule:
     - cron: "17 2 * * *"   # every day at 02:17 UTC
   workflow_dispatch:         # "Run workflow" button on the Actions tab
   push:
-    branches-ignore:
-      - "gh-pages"
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
 concurrency:
-  group: movies
-  cancel-in-progress: false
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  update:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,34 +36,22 @@ jobs:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: |
           if [ -z "$TMDB_TOKEN" ] && [ -z "$TMDB_API_KEY" ]; then
-            echo "::warning::Add a TMDB_TOKEN repository secret to fetch movie data automatically."
-          else
-            node scripts/update-movies.mjs
+            echo "::error::Add a TMDB_TOKEN repository secret (Settings → Secrets and variables → Actions)."
+            exit 1
           fi
-
-      - name: Commit updated data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add movies.js data
-          if git diff --cached --quiet; then
-            echo "No changes."
-          else
-            git commit -m "Update movie data from TMDB"
-            git push
-          fi
+          node scripts/update-movies.mjs
 
       - name: Prepare site
         run: |
           mkdir -p _site
-          cp -r index.html style.css app.js movies.js data _site/
+          cp -r index.html style.css app.js tickets.js movies.js data _site/
 
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
   deploy:
-    needs: update
+    needs: build
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     environment:

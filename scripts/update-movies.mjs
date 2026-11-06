@@ -1,22 +1,25 @@
 #!/usr/bin/env node
 /*
- * Builds the site's data from TMDB (https://www.themoviedb.org):
+ * Builds the site's data from TMDB (https://www.themoviedb.org).
  *
- *   movies.js              every movie on the site, with release dates and age
- *                          ratings for every country, translations, artwork,
- *                          cast, official YouTube trailers/teasers and colours
- *   data/people/<id>.json  a profile for every cast member and director:
- *                          bio, photos and filmography
- *   data/i18n/<lang>.json  translated titles, taglines and overviews
+ * Output (all generated — not committed to git; the GitHub Action builds and deploys it):
+ *   movies.js                  index of every movie: titles, per-country release dates
+ *                              and ratings, artwork, colours, "most anticipated" ranks
+ *   data/movies/<tmdb>.json    full details for one movie: synopsis, cast, trailers…
+ *   data/people/<id>.json      profile for each cast member / director
+ *   data/people-index.json     names + photos for search
+ *   data/i18n/<lang>.json      translated titles, taglines and overviews
  *
- * Movies come from watchlist.json, the most popular upcoming releases, and
- * classic films returning to cinemas (re-releases).
+ * Movies come from:
+ *   - watchlist.json "movies" (always included)
+ *   - for each country in "regions": the most popular films releasing there, plus
+ *     the most popular upcoming films made there (local cinema)
+ *   - the worldwide most anticipated films, in any language
+ *   - classic films returning to cinemas (re-releases)
  *
  * Auth (either one):
  *   TMDB_TOKEN    TMDB "API Read Access Token" (v4, sent as a Bearer header)
  *   TMDB_API_KEY  TMDB "API Key" (v3, sent as ?api_key=)
- *
- * Usage: node scripts/update-movies.mjs
  */
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -37,11 +40,13 @@ if (!TOKEN && !KEY) {
 
 const config = JSON.parse(await readFile(path.join(ROOT, "watchlist.json"), "utf8"));
 const REGION = config.region || "US";
+const REGIONS = config.regions || [REGION];
 const LANG = config.language || "en-US";
 const TODAY = new Date().toISOString().slice(0, 10);
 const isoDaysFromNow = (n) => new Date(Date.now() + n * DAY).toISOString().slice(0, 10);
 
 // ---------- helpers ----------
+let calls = 0;
 async function tmdb(route, params = {}) {
   const url = new URL(API + route);
   for (const [k, v] of Object.entries({ language: LANG, ...params })) url.searchParams.set(k, v);
@@ -49,8 +54,13 @@ async function tmdb(route, params = {}) {
   const headers = { accept: "application/json" };
   if (TOKEN) headers.authorization = `Bearer ${TOKEN}`;
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const res = await fetch(url, { headers });
+  for (let attempt = 0; attempt < 6; attempt++) {
+    calls++;
+    let res;
+    try { res = await fetch(url, { headers }); } catch {
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+      continue;
+    }
     if (res.status === 429 || res.status >= 500) {
       await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
       continue;
@@ -61,7 +71,6 @@ async function tmdb(route, params = {}) {
   throw new Error(`TMDB kept failing for ${route}`);
 }
 
-// Run fn over items with limited concurrency, keeping order.
 async function pool(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
@@ -74,13 +83,13 @@ async function pool(items, limit, fn) {
   return out;
 }
 
-const slugify = (s) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const slugify = (s) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "movie";
 const img = (size, p) => (p ? `${IMG}/${size}${p}` : null);
-
-function bestImage(list) {
-  const top = (list || []).slice().sort((a, b) => b.vote_average - a.vote_average || b.width - a.width)[0];
-  return top?.file_path || null;
-}
+const topImages = (list, n) => (list || []).slice()
+  .sort((a, b) => b.vote_average - a.vote_average || b.width - a.width).slice(0, n)
+  .map((i) => [i.file_path, i.width, i.height]);
+const bestImage = (list) =>
+  (list || []).slice().sort((a, b) => b.vote_average - a.vote_average || b.width - a.width)[0]?.file_path || null;
 
 // ---------- finding movies ----------
 async function findId(entry) {
@@ -93,32 +102,47 @@ async function findId(entry) {
   return (results.find((r) => norm(r.title) === norm(entry.title)) || results[0]).id;
 }
 
-async function discoverUpcoming(count) {
+async function discover(params, count) {
   const ids = [];
   for (let page = 1; ids.length < count && page <= 3; page++) {
-    const { results } = await tmdb("/discover/movie", {
-      region: REGION, "release_date.gte": TODAY, with_release_type: "2|3",
-      "primary_release_date.gte": isoDaysFromNow(-365), // old films coming back are re-releases
-      sort_by: "popularity.desc", include_adult: "false", page,
+    const { results, total_pages } = await tmdb("/discover/movie", {
+      sort_by: "popularity.desc", include_adult: "false", page, ...params,
     });
-    for (const r of results) if (ids.length < count && r.poster_path && r.backdrop_path) ids.push(r.id);
+    for (const r of results) if (ids.length < count && r.poster_path && !ids.includes(r.id)) ids.push(r.id);
+    if (page >= total_pages) break;
   }
   return ids;
 }
 
-// Classic films with a new cinema date coming up in any of the given countries.
-async function discoverRereleases(regions, count) {
-  if (!count) return [];
-  const ids = new Set();
-  for (const region of regions) {
-    const { results } = await tmdb("/discover/movie", {
-      region, "release_date.gte": isoDaysFromNow(-7), "release_date.lte": isoDaysFromNow(150),
-      "primary_release_date.lte": isoDaysFromNow(-730), with_release_type: "2|3",
-      sort_by: "popularity.desc", include_adult: "false",
-    });
-    results.filter((r) => r.backdrop_path).slice(0, 6).forEach((r) => ids.add(r.id));
+// Popular films with a cinema date coming up in a country (new films only).
+const releasingIn = (region, n) => discover({
+  region, "release_date.gte": TODAY, "release_date.lte": isoDaysFromNow(730),
+  "primary_release_date.gte": isoDaysFromNow(-365), with_release_type: "2|3",
+}, n);
+
+// Popular upcoming films made in a country.
+const madeIn = (region, n) => discover({
+  with_origin_country: region,
+  "primary_release_date.gte": TODAY, "primary_release_date.lte": isoDaysFromNow(730),
+}, n);
+
+const worldwide = (n) => discover({
+  "primary_release_date.gte": TODAY, "primary_release_date.lte": isoDaysFromNow(730),
+}, n);
+
+// Classic films with a new cinema date coming up.
+const rereleasesIn = (region, n) => discover({
+  region, "release_date.gte": isoDaysFromNow(-7), "release_date.lte": isoDaysFromNow(150),
+  "primary_release_date.lte": isoDaysFromNow(-730), with_release_type: "2|3",
+}, n);
+
+// Merge two ranked lists, alternating, without duplicates.
+function interleave(a, b) {
+  const out = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    for (const id of [a[i], b[i]]) if (id && !out.includes(id)) out.push(id);
   }
-  return [...ids].slice(0, count);
+  return out;
 }
 
 // ---------- per-country dates ----------
@@ -132,7 +156,6 @@ function datesByCountry(d, rerelease) {
     const cert = entries.find((x) => x.certification)?.certification;
     if (cert) certs[r.iso_3166_1] = cert;
     if (rerelease) {
-      // Only new cinema dates at least a year after the original release.
       entries = entries.filter((x) => (x.type === 3 || x.type === 2) && x.day >= isoDaysFromNow(-30) &&
         (!primary || new Date(x.day) - new Date(primary) > 365 * DAY));
     }
@@ -141,8 +164,13 @@ function datesByCountry(d, rerelease) {
       if (days.length) { dates[r.iso_3166_1] = days[0]; break; }
     }
   }
+  // Local films often have no regional dates yet: use the primary date for their home country.
+  if (!rerelease && primary) for (const c of d.origin_country || []) dates[c] ||= primary;
   return { dates, certs };
 }
+
+// "US20261218IN20261217…" — compact, since there can be 100+ countries per film.
+const packDates = (dates) => Object.entries(dates).sort().map(([c, d]) => c + d.replace(/-/g, "")).join("");
 
 function translations(d) {
   const out = {};
@@ -151,7 +179,7 @@ function translations(d) {
     if (lang === "en" || out[lang]) continue;
     const { title = "", overview = "", tagline = "" } = t.data || {};
     if (!title && !overview) continue;
-    out[lang] = { title, overview, tagline };
+    out[lang] = Object.fromEntries(Object.entries({ title, overview, tagline }).filter(([, v]) => v));
   }
   return out;
 }
@@ -179,10 +207,10 @@ async function palette(url) {
     for (let i = 0; i < width * height * 4; i += 16) {
       const r = data[i] / 255, g = data[i + 1] / 255, b = data[i + 2] / 255;
       const max = Math.max(r, g, b), min = Math.min(r, g, b), c = max - min;
-      if (max < 0.18 || c / max < 0.25) continue; // skip dark & greyish pixels
+      if (max < 0.18 || c / max < 0.25) continue;
       let h = max === r ? ((g - b) / c) % 6 : max === g ? (b - r) / c + 2 : (r - g) / c + 4;
       h = (h * 60 + 360) % 360;
-      const w = (c / max) * max * max; // favour vivid, bright pixels
+      const w = (c / max) * max * max;
       const bin = Math.floor(h / 10);
       bins[bin] += w; total += w;
       sums[bin][0] += Math.cos((h * Math.PI) / 180) * w;
@@ -202,8 +230,7 @@ async function palette(url) {
     const dist = (a, b) => Math.min(Math.abs(a - b), 36 - Math.abs(a - b));
     const second = order.find(([s, i]) => dist(i, first) >= 4 && s > order[0][0] * 0.15);
     const h1 = hueOf(first);
-    const h2 = second ? hueOf(second[1]) : (h1 + 345) % 360; // no 2nd colour: a warmer neighbour
-    return [h1, h2];
+    return [h1, second ? hueOf(second[1]) : (h1 + 345) % 360];
   } catch {
     return null;
   }
@@ -216,9 +243,10 @@ async function buildMovie(id, kind) {
     include_video_language: "en,null",
     include_image_language: "en,null",
   });
+  if (!d.poster_path && !d.backdrop_path) return null;
   const { dates, certs } = datesByCountry(d, kind === "rerelease");
-  const sortedDates = Object.values(dates).sort();
-  const date = dates[REGION] || (kind === "rerelease" ? sortedDates[0] : d.release_date || sortedDates[0]);
+  const sorted = Object.values(dates).sort();
+  const date = kind === "rerelease" ? (dates[REGION] || sorted[0]) : (d.release_date || sorted[0]);
   if (!date) return null;
 
   const textless = bestImage(d.images?.backdrops?.filter((b) => b.iso_639_1 === null));
@@ -226,42 +254,57 @@ async function buildMovie(id, kind) {
   const posterPath = bestImage(d.images?.posters?.filter((p) => p.iso_639_1 === "en")) || d.poster_path;
   const logoPath = bestImage(d.images?.logos?.filter((l) => l.iso_639_1 === "en" && !l.file_path.endsWith(".svg")));
   const directors = (d.credits?.crew || []).filter((c) => c.job === "Director").slice(0, 2);
+  const cast = (d.credits?.cast || []).slice(0, 12);
+  const vids = trailers(d);
+  const overview = d.overview || "";
 
-  return {
+  const index = {
     id: `${slugify(d.title)}-${d.id}`,
     tmdb: d.id,
-    kind, // "pinned" | "auto" | "rerelease"
+    kind,
     title: d.title,
+    ...(d.original_title && d.original_title !== d.title ? { originalTitle: d.original_title } : {}),
+    lang: d.original_language,
+    origin: d.origin_country || [],
     date,
-    dates,
+    dates: packDates(dates),
     certs,
-    originalDate: d.release_date || null,
-    director: directors.map((c) => c.name).join(" & "),
-    directors: directors.map((c) => ({ name: c.name, id: c.id })),
-    tagline: d.tagline || "",
-    synopsis: d.overview || "",
-    i18n: translations(d),
+    ...(kind === "rerelease" && d.release_date ? { originalDate: d.release_date } : {}),
     genres: (d.genres || []).map((g) => g.name),
     runtime: d.runtime || null,
-    poster: img("w500", posterPath),
-    backdrop: img("w1280", backdropPath),
+    poster: img("w342", posterPath),
     card: img("w780", backdropPath),
+    backdrop: img("w1280", backdropPath),
     logo: img("w500", logoPath),
     artHasTitle: !textless && !!backdropPath,
     hue: (await palette(img("w300", backdropPath))) || (await palette(img("w185", posterPath))) || [20, 40],
-    trailers: trailers(d),
-    cast: (d.credits?.cast || []).slice(0, 12).map((c) => ({
-      actor: c.name, role: c.character || "", photo: img("w185", c.profile_path), tmdb: c.id,
-    })),
-    links: {
-      official: d.homepage || null,
+    blurb: overview.length > 240 ? overview.slice(0, 237).replace(/\s+\S*$/, "") + "…" : overview,
+    director: directors.map((c) => c.name).join(" & "),
+    people: cast.slice(0, 4).map((c) => c.name),
+    video: vids[0] ? vids[0].type : null,
+    hot: {},
+  };
+  const detail = {
+    tmdb: d.id,
+    tagline: d.tagline || "",
+    synopsis: overview,
+    directors: directors.map((c) => ({ name: c.name, id: c.id })),
+    cast: cast.map((c) => ({ actor: c.name, role: c.character || "", photo: img("w185", c.profile_path), tmdb: c.id })),
+    trailers: vids,
+    official: d.homepage || null,
+    // Official artwork for the download section (TMDB file paths).
+    artwork: {
+      posters: topImages(d.images?.posters, 12),
+      backdrops: topImages(d.images?.backdrops, 12),
+      logos: topImages(d.images?.logos?.filter((l) => !l.file_path.endsWith(".svg")), 6),
     },
   };
+  return { index, detail, i18n: translations(d), people: [...cast.map((c) => c.id), ...directors.map((c) => c.id)] };
 }
 
 // ---------- one person ----------
 const CREW_JOBS = new Set(["Director", "Screenplay", "Writer", "Story", "Novel", "Producer",
-  "Executive Producer", "Original Music Composer", "Director of Photography", "Editor"]);
+  "Original Music Composer", "Director of Photography", "Editor"]);
 
 async function buildPerson(id, hue) {
   const p = await tmdb(`/person/${id}`, { append_to_response: "movie_credits,images" });
@@ -290,79 +333,85 @@ async function buildPerson(id, hue) {
     .map(({ votes, ...f }) => f);
 
   return {
-    id: p.id,
-    name: p.name,
-    bio: p.biography || "",
-    birthday: p.birthday || null,
-    deathday: p.deathday || null,
-    place: p.place_of_birth || null,
-    dept: p.known_for_department || null,
+    id: p.id, name: p.name, bio: p.biography || "",
+    birthday: p.birthday || null, deathday: p.deathday || null,
+    place: p.place_of_birth || null, dept: p.known_for_department || null,
     photo: img("h632", p.profile_path),
+    thumb: img("w185", p.profile_path),
     photos: (p.images?.profiles || []).slice(0, 8).map((x) => img("w342", x.file_path)),
-    hue,
-    knownFor,
-    credits,
+    hue, knownFor, credits,
   };
 }
 
 // ---------- main ----------
-const pinned = [];
+const started = Date.now();
+const kinds = new Map(); // tmdb id -> kind (first one wins)
+const hot = {};          // region -> ranked ids
+const want = (id, kind) => { if (!kinds.has(id)) kinds.set(id, kind); };
+
 for (const entry of config.movies || []) {
   const id = await findId(entry);
-  if (id) pinned.push(id); else console.warn(`! Not found on TMDB: ${entry.title}`);
-}
-const auto = (await discoverUpcoming(config.autoUpcoming ?? 12)).filter((id) => !pinned.includes(id));
-const rereleaseIds = (await discoverRereleases(config.reReleaseRegions || [REGION], config.reReleases ?? 10))
-  .filter((id) => !pinned.includes(id) && !auto.includes(id));
-
-const jobs = [
-  ...pinned.map((id) => [id, "pinned"]),
-  ...auto.map((id) => [id, "auto"]),
-  ...rereleaseIds.map((id) => [id, "rerelease"]),
-];
-const cutoff = Date.now() - (config.keepReleasedDays ?? 60) * DAY;
-const movies = (await pool(jobs, 6, ([id, kind]) => buildMovie(id, kind)))
-  .filter(Boolean)
-  .filter((m) => m.kind === "pinned" ||
-    new Date(m.date).getTime() >= (m.kind === "rerelease" ? Date.now() - 21 * DAY : cutoff))
-  .sort((a, b) => a.date.localeCompare(b.date) || a.tmdb - b.tmdb);
-for (const m of movies) {
-  console.log(`✓ [${m.kind}] ${m.title} — ${m.date} — ${Object.keys(m.dates).length} countries — ${m.trailers.length} videos`);
+  if (id) want(id, "pinned"); else console.warn(`! Not found on TMDB: ${entry.title}`);
 }
 
-// People: everyone in the cast lists plus directors, coloured like their first movie.
-const people = new Map();
-for (const m of movies) {
-  for (const c of m.cast) if (!people.has(c.tmdb)) people.set(c.tmdb, m.hue);
-  for (const d of m.directors) if (!people.has(d.id)) people.set(d.id, m.hue);
-}
-const peopleDir = path.join(ROOT, "data", "people");
-await rm(peopleDir, { recursive: true, force: true });
-await mkdir(peopleDir, { recursive: true });
-let written = 0;
-await pool([...people], 8, async ([id, hue]) => {
-  const person = await buildPerson(id, hue);
-  await writeFile(path.join(peopleDir, `${id}.json`), JSON.stringify(person));
-  written++;
+const perRegion = config.perRegion ?? 15;
+await pool(REGIONS, 4, async (region) => {
+  const [rel, local] = await Promise.all([releasingIn(region, perRegion), madeIn(region, perRegion)]);
+  hot[region] = interleave(local, rel);
+  console.log(`  ${region}: ${rel.length} releasing there, ${local.length} made there`);
 });
+hot.WW = await worldwide(config.worldwide ?? 30);
+for (const r of [...REGIONS, "WW"]) for (const id of hot[r] || []) want(id, "auto");
 
-// Translations go in one small file per language, so visitors only load their own.
-const i18nDir = path.join(ROOT, "data", "i18n");
-await rm(i18nDir, { recursive: true, force: true });
-await mkdir(i18nDir, { recursive: true });
+const rr = await pool(config.reReleaseRegions || [REGION], 4, (r) => rereleasesIn(r, 6));
+const rrIds = [...new Set(rr.flat().filter(Boolean))].filter((id) => !kinds.has(id));
+for (const id of rrIds.slice(0, config.reReleases ?? 12)) want(id, "rerelease");
+
+console.log(`Building ${kinds.size} movies…`);
+const cutoff = Date.now() - (config.keepReleasedDays ?? 45) * DAY;
+const built = (await pool([...kinds], 8, ([id, kind]) => buildMovie(id, kind)))
+  .filter(Boolean)
+  .filter(({ index: m }) => m.kind === "pinned" ||
+    new Date(m.date).getTime() >= (m.kind === "rerelease" ? Date.now() - 21 * DAY : cutoff));
+
+// "Most anticipated" ranks per region (1 = most anticipated).
+const byId = new Map(built.map((b) => [b.index.tmdb, b.index]));
+for (const [region, ids] of Object.entries(hot)) {
+  let rank = 0;
+  for (const id of ids) { const m = byId.get(id); if (m && m.kind !== "rerelease") m.hot[region] = ++rank; }
+}
+
+// Write everything into a fresh data folder.
+const DATA_DIR = path.join(ROOT, "data");
+await rm(DATA_DIR, { recursive: true, force: true });
+for (const sub of ["movies", "people", "i18n"]) await mkdir(path.join(DATA_DIR, sub), { recursive: true });
+
 const byLang = {};
-for (const m of movies) {
-  for (const [lang, t] of Object.entries(m.i18n)) (byLang[lang] ||= {})[m.tmdb] = t;
-  delete m.i18n;
+for (const b of built) {
+  await writeFile(path.join(DATA_DIR, "movies", `${b.index.tmdb}.json`), JSON.stringify(b.detail));
+  for (const [lang, t] of Object.entries(b.i18n)) (byLang[lang] ||= {})[b.index.tmdb] = t;
 }
 for (const [lang, table] of Object.entries(byLang)) {
-  await writeFile(path.join(i18nDir, `${lang}.json`), JSON.stringify(table));
+  await writeFile(path.join(DATA_DIR, "i18n", `${lang}.json`), JSON.stringify(table));
 }
 
+// People: everyone in a cast list plus directors, coloured like their first movie.
+const people = new Map();
+for (const b of built) for (const id of b.people) if (!people.has(id)) people.set(id, b.index.hue);
+console.log(`Building ${people.size} people…`);
+const peopleIndex = [];
+await pool([...people], 10, async ([id, hue]) => {
+  const p = await buildPerson(id, hue);
+  await writeFile(path.join(DATA_DIR, "people", `${id}.json`), JSON.stringify(p));
+  peopleIndex.push([p.id, p.name, p.thumb ? p.thumb.slice(`${IMG}/w185`.length) : "", p.dept || ""]);
+});
+peopleIndex.sort((a, b) => a[1].localeCompare(b[1]));
+await writeFile(path.join(DATA_DIR, "people-index.json"), JSON.stringify(peopleIndex));
+
+const movies = built.map((b) => b.index).sort((a, b) => a.date.localeCompare(b.date) || a.tmdb - b.tmdb);
 await writeFile(
   path.join(ROOT, "movies.js"),
   `// Generated by scripts/update-movies.mjs from TMDB — do not edit by hand.\n` +
-  `// Edit watchlist.json instead, then run: npm run update\n` +
-  `window.MOVIE_DATA = ${JSON.stringify({ updated: new Date().toISOString(), region: REGION, source: "TMDB", movies })};\n`
+  `window.MOVIE_DATA = ${JSON.stringify({ updated: new Date().toISOString(), region: REGION, regions: REGIONS, movies })};\n`
 );
-console.log(`\nWrote ${movies.length} movies to movies.js and ${written} people to data/people/`);
+console.log(`\nWrote ${movies.length} movies and ${people.size} people (${calls} API calls, ${Math.round((Date.now() - started) / 1000)}s)`);

@@ -1,8 +1,38 @@
 {
   "region": "US",
   "language": "en-US",
-  "autoUpcoming": 12,
-  "keepReleasedDays": 60,
+  "regions": [
+    "US",
+    "IN",
+    "GB",
+    "CA",
+    "AU",
+    "JP",
+    "KR",
+    "CN",
+    "FR",
+    "DE",
+    "ES",
+    "IT",
+    "BR",
+    "MX",
+    "TR",
+    "ID"
+  ],
+  "perRegion": 15,
+  "worldwide": 30,
+  "reReleases": 12,
+  "reReleaseRegions": [
+    "US",
+    "IN",
+    "GB",
+    "CA",
+    "AU",
+    "FR",
+    "DE",
+    "JP"
+  ],
+  "keepReleasedDays": 45,
   "movies": [
     {
       "title": "Avengers: Doomsday",
@@ -36,16 +66,5 @@
       "title": "The Odyssey",
       "year": 2026
     }
-  ],
-  "reReleases": 10,
-  "reReleaseRegions": [
-    "US",
-    "IN",
-    "GB",
-    "CA",
-    "AU",
-    "FR",
-    "DE",
-    "JP"
   ]
 }

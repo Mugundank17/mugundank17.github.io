@@ -8,9 +8,21 @@
   const app = $("#app");
   const nav = $("#nav");
   const DAY = 86400000;
+  const IMG = "https://image.tmdb.org/t/p";
 
   // ---------- data ----------
   const DATA = window.MOVIE_DATA || { movies: [] };
+  const unpackDates = (s) => {
+    if (!s || typeof s !== "string") return s || null;
+    const out = {};
+    for (let i = 0; i + 10 <= s.length; i += 10) {
+      out[s.slice(i, i + 2)] = `${s.slice(i + 2, i + 6)}-${s.slice(i + 6, i + 8)}-${s.slice(i + 8, i + 10)}`;
+    }
+    return out;
+  };
+  DATA.movies.forEach((m) => { m.dates = unpackDates(m.dates); });
+  const REGIONS = new Set(DATA.regions || []);
+
   let custom = loadCustom();
   const all = () => [...DATA.movies, ...custom];
   const byTmdb = new Map(DATA.movies.map((m) => [m.tmdb, m]));
@@ -25,11 +37,23 @@
     try { localStorage.setItem(STORE, JSON.stringify(custom)); } catch (_) { /* ignore */ }
   }
 
+  // Full details (synopsis, cast, trailers) are loaded only when needed.
+  const detailCache = new Map();
+  function loadDetail(m) {
+    if (!m.tmdb || m._loaded) return Promise.resolve(m);
+    if (!detailCache.has(m.tmdb)) {
+      detailCache.set(m.tmdb, fetch(`data/movies/${m.tmdb}.json`)
+        .then((r) => (r.ok ? r.json() : {}))
+        .then((d) => { Object.assign(m, d, { _loaded: true }); return m; })
+        .catch(() => { detailCache.delete(m.tmdb); return m; }));
+    }
+    return detailCache.get(m.tmdb);
+  }
+
   // ---------- locale: language + country ----------
   const LANG = (navigator.languages && navigator.languages[0]) || navigator.language || "en-US";
   const LANG_BASE = LANG.split("-")[0].toLowerCase();
 
-  // Time zone → country, so release dates follow where the visitor actually is.
   const TZ_COUNTRY = Object.fromEntries(`
     America/New_York America/Chicago America/Denver America/Los_Angeles America/Phoenix America/Anchorage
     America/Detroit America/Boise America/Indiana/Indianapolis Pacific/Honolulu:US
@@ -75,11 +99,18 @@
     return DATA.region || "US";
   }
   let COUNTRY = detectCountry();
+  const TICKETS = window.TICKETS || {};
+  const cityKey = (cc) => `movie-countdown:city:${cc}`;
+  const loadCity = (cc) => { try { return localStorage.getItem(cityKey(cc)) || ""; } catch (_) { return ""; } };
+  let CITY = loadCity(COUNTRY);
 
-  const regionNames = (() => { try { return new Intl.DisplayNames([LANG], { type: "region" }); } catch (_) { return null; } })();
+  const displayNames = (type) => { try { return new Intl.DisplayNames([LANG], { type }); } catch (_) { return null; } };
+  const regionNames = displayNames("region");
+  const languageNames = displayNames("language");
   const countryName = (cc) => { try { return regionNames?.of(cc) || cc; } catch (_) { return cc; } };
+  const languageName = (code) => { try { return languageNames?.of(code) || code; } catch (_) { return code; } };
 
-  // Translated titles / overviews / taglines from TMDB, loaded only for the visitor's language.
+  // Translated titles / overviews / taglines, loaded only for the visitor's language.
   let TR = {};
   if (LANG_BASE !== "en") {
     fetch(`data/i18n/${encodeURIComponent(LANG_BASE)}.json`)
@@ -89,15 +120,13 @@
   }
   const tr = (m, field, fallback) => TR[m.tmdb]?.[field] || fallback;
   const title = (m) => tr(m, "title", m.title);
-  const synopsis = (m) => tr(m, "overview", m.synopsis);
+  const synopsis = (m) => tr(m, "overview", m.synopsis || m.blurb);
   const tagline = (m) => tr(m, "tagline", m.tagline);
 
-  // Countdown unit labels in the visitor's language ("Days", "Tage", "jours", "दिन" …).
   const unitLabel = (unit, fallback) => {
     try {
       const parts = new Intl.NumberFormat(LANG, { style: "unit", unit, unitDisplay: "long" }).formatToParts(2);
-      const label = parts.filter((p) => p.type === "unit").map((p) => p.value).join("").trim();
-      return label || fallback;
+      return parts.filter((p) => p.type === "unit").map((p) => p.value).join("").trim() || fallback;
     } catch (_) { return fallback; }
   };
   const UNITS = [unitLabel("day", "Days"), unitLabel("hour", "Hours"), unitLabel("minute", "Minutes"), unitLabel("second", "Seconds")];
@@ -106,20 +135,28 @@
   const dateStr = (m) => m.dates?.[COUNTRY] || m.date;
   const datedHere = (m) => !m.dates || !!m.dates[COUNTRY];
   const parseDay = (s) => { const [y, mo, d] = s.split("-").map(Number); return new Date(y, mo - 1, d || 1).getTime(); };
+  const dayKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+  const startOfDay = (t = Date.now()) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
   const time = (m) => parseDay(dateStr(m));
   const isOut = (m) => time(m) <= Date.now();
   const byDate = (a, b) => time(a) - time(b);
-  const visible = (m) => m.kind !== "rerelease" || !!m.dates?.[COUNTRY]; // re-releases are local events
+  const visible = (m) => m.kind !== "rerelease" || !!m.dates?.[COUNTRY];
   const isRe = (m) => m.kind === "rerelease";
 
-  const upcoming = () => all().filter((m) => visible(m) && !isRe(m) && !isOut(m)).sort(byDate);
-  const released = () => all().filter((m) => visible(m) && !isRe(m) && isOut(m)).sort((a, b) => byDate(b, a));
-  const rereleases = () => all().filter((m) => visible(m) && isRe(m)).sort(byDate);
+  const listed = () => all().filter(visible);
+  const upcoming = () => listed().filter((m) => !isRe(m) && !isOut(m)).sort(byDate);
+  const upcomingHere = () => upcoming().filter(datedHere);
+  const released = () => listed().filter((m) => !isRe(m) && isOut(m) && datedHere(m)).sort((a, b) => byDate(b, a));
+  const rereleases = () => listed().filter(isRe).sort(byDate);
+
+  // Most anticipated in the visitor's country (or worldwide if we don't rank that country).
+  const rankKey = () => (REGIONS.has(COUNTRY) ? COUNTRY : "WW");
+  const anticipated = (key = rankKey()) => upcoming().filter((m) => m.hot?.[key]).sort((a, b) => a.hot[key] - b.hot[key]);
 
   // ---------- helpers ----------
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const pad = (n) => String(n).padStart(2, "0");
+  function pad(n) { return String(n).padStart(2, "0"); }
   const fmt = (t, opts) => new Date(t).toLocaleDateString(LANG, opts);
   const longDate = (t) => fmt(t, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const shortDate = (t) => fmt(t, { month: "short", day: "numeric", year: "numeric" });
@@ -129,13 +166,14 @@
   const longestWord = (t) => Math.max(...t.split(/\s+/).map((w) => w.length));
   const movieHref = (m) => `#/movie/${encodeURIComponent(m.id)}`;
   const personHref = (id) => `#/person/${encodeURIComponent(id)}`;
+  const calHref = (key, mode = "day") => `#/calendar/${key}${mode === "day" ? "" : "/" + mode}`;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   function parts(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
     return [Math.floor(s / 86400), Math.floor((s % 86400) / 3600), Math.floor((s % 3600) / 60), s % 60];
   }
 
-  // A countdown block for a timestamp; tick() keeps every [data-t] live.
   function countdownAt(t, cls = "", outLabel = "Now in cinemas") {
     if (t <= Date.now()) return `<div class="cd ${cls} out">${esc(outLabel)}</div>`;
     const p = parts(t - Date.now());
@@ -176,10 +214,9 @@
     </div>`;
 
   function trailerBtn(m) {
-    const first = m.trailers?.[0];
-    if (!first) return `<button class="play" type="button" disabled><span>▶</span> Trailer coming soon</button>`;
-    const label = first.type === "Teaser" ? "Watch Teaser" : "Watch Trailer";
-    return `<button class="play" type="button" data-trailer="${esc(m.id)}"><span>▶</span> ${label}</button>`;
+    const type = m.trailers?.[0]?.type || m.video;
+    if (!type) return `<button class="play" type="button" disabled><span>▶</span> Trailer coming soon</button>`;
+    return `<button class="play" type="button" data-trailer="${esc(m.id)}"><span>▶</span> ${type === "Teaser" ? "Watch Teaser" : "Watch Trailer"}</button>`;
   }
 
   function titleArt(m, cls) {
@@ -188,11 +225,11 @@
       ? `<img class="${cls} logo" src="${esc(m.logo)}" alt="${esc(title(m))}" loading="lazy">`
       : `<span class="${cls}">${esc(title(m))}</span>`;
   }
-  function ticketHref(m) {
-    return m.tickets || `https://www.google.com/search?q=${encodeURIComponent(title(m) + " movie tickets near me")}`;
-  }
+  const ticketBtn = (m, cls = "btn btn-outline") =>
+    `<button class="${cls}" type="button" data-tickets="${esc(m.id)}">🎟 Get Tickets</button>`;
   const localNote = (m) => (datedHere(m) ? ""
     : `<p class="local-note">No release date announced in ${esc(countryName(COUNTRY))} yet — showing the worldwide date.</p>`);
+  const origTitle = (m) => (m.originalTitle && m.originalTitle !== title(m) ? m.originalTitle : "");
 
   // ---------- cards & rows ----------
   function card(m) {
@@ -205,11 +242,12 @@
         <div class="card-art ${art ? "has-img" : ""}" style="${bg(art)}">
           ${m.artHasTitle ? "" : titleArt(m, "card-title")}
           ${badge}
-          ${isRe(m) ? `<span class="tag tag-re">Re-release</span>` : ""}
+          ${isRe(m) ? `<span class="tag tag-re">Re-release</span>`
+            : m.lang && m.lang !== LANG_BASE && m.lang !== "en" ? `<span class="tag tag-lang">${esc(languageName(m.lang))}</span>` : ""}
         </div>
         <div class="card-info">
           <strong>${esc(title(m))}</strong>
-          <span>${esc(shortDate(time(m)))}${m.certs?.[COUNTRY] ? ` · ${esc(m.certs[COUNTRY])}` : ""}</span>
+          <span>${esc(shortDate(time(m)))}${m.certs?.[COUNTRY] ? ` · ${esc(m.certs[COUNTRY])}` : ""}${datedHere(m) ? "" : " · 🌐"}</span>
           ${countdown(m, "cd-mini")}
         </div>
       </a>`;
@@ -226,47 +264,242 @@
       </div>`;
   }
 
-  function row(id, heading, items, render = card, cls = "") {
+  function row(id, heading, items, render = card, cls = "", extra = "") {
     if (!items.length) return "";
-    return `<section class="row" id="${id}"><h2 class="row-title">${heading}</h2>${rail(items, render, cls)}</section>`;
+    return `<section class="row" id="${id}"><div class="row-head"><h2 class="row-title">${heading}</h2>${extra}</div>${rail(items, render, cls)}</section>`;
+  }
+
+  // Rows of upcoming films grouped by original language — local languages first.
+  function languageRows() {
+    const up = upcoming();
+    const groups = {};
+    for (const m of up) if (m.lang) (groups[m.lang] ||= []).push(m);
+    const localLangs = new Set(up.filter((m) => m.origin?.includes(COUNTRY)).map((m) => m.lang));
+    return Object.entries(groups)
+      .filter(([, list]) => list.length >= 3)
+      .sort((a, b) => (localLangs.has(b[0]) - localLangs.has(a[0])) || b[1].length - a[1].length)
+      .slice(0, 8)
+      .map(([lang, list]) => row(`row-lang-${lang}`, `${esc(languageName(lang))} Films`, list.slice(0, 20)))
+      .join("");
   }
 
   // ---------- home ----------
   function renderHome() {
     document.title = "Movie Countdown";
-    const up = upcoming();
-    const hero = up[0] || released()[0];
-    const years = [...new Set(up.map((m) => dateStr(m).slice(0, 4)))];
+    const top = anticipated();
+    const hero = top[0] || upcomingHere()[0] || upcoming()[0] || released()[0];
+    const here = esc(countryName(COUNTRY));
+    const weekEnd = startOfDay() + 7 * DAY;
+    const thisWeek = upcomingHere().filter((m) => time(m) < weekEnd);
 
     if (!hero) {
       app.innerHTML = `<section class="empty-state"><h1>No movies yet</h1>
-        <p>Run the “Update movies” GitHub Action (or <code>npm run update</code>) to load movies from TMDB, or press + Add.</p></section>`;
+        <p>Run the “Update movies & deploy” GitHub Action (or <code>npm run update</code>) to load movies from TMDB, or press + Add.</p></section>`;
       return;
     }
+    const heroRank = hero.hot?.[rankKey()];
     app.innerHTML = `
       <header class="billboard cine" style="${theme(hero.hue)}">
         ${fireLayers(hero.backdrop)}
         <div class="billboard-body">
-          <p class="kicker">${isOut(hero) ? "Now showing" : "Next release"} · ${esc(countryName(COUNTRY))}</p>
+          <p class="kicker">${heroRank === 1 ? `#1 most anticipated in ${rankKey() === "WW" ? "the world" : here}` : isOut(hero) ? "Now showing" : "Next release"}</p>
           <h1 class="bb-title">${hero.logo && !TR[hero.tmdb]?.title ? `<img class="bb-logo" src="${esc(hero.logo)}" alt="${esc(title(hero))}">` : esc(title(hero))}</h1>
-          <p class="bb-meta">${esc(longDate(time(hero)))}${hero.certs?.[COUNTRY] ? ` · <span class="cert">${esc(hero.certs[COUNTRY])}</span>` : ""}${hero.genres?.length ? " · " + hero.genres.map(esc).join(" · ") : ""}</p>
+          ${origTitle(hero) ? `<p class="bb-orig">${esc(origTitle(hero))}</p>` : ""}
+          <p class="bb-meta">${esc(longDate(time(hero)))}${hero.certs?.[COUNTRY] ? ` · <span class="cert">${esc(hero.certs[COUNTRY])}</span>` : ""}${hero.genres?.length ? " · " + hero.genres.slice(0, 3).map(esc).join(" · ") : ""}</p>
           ${synopsis(hero) ? `<p class="bb-text">${esc(synopsis(hero))}</p>` : ""}
           ${countdown(hero, "cd-bb")}
           <div class="cta">
             <a class="btn btn-solid" href="${movieHref(hero)}">ⓘ More Info</a>
+            ${ticketBtn(hero)}
             ${trailerBtn(hero)}
           </div>
         </div>
       </header>
       <div class="rows">
-        ${row("row-top", "Next to Release", up.slice(0, 5), rankCard, "rail-ranked")}
-        ${row("row-upcoming", "Coming Soon", up)}
-        ${row("row-rereleases", `Back in Cinemas · ${esc(countryName(COUNTRY))}`, rereleases())}
-        ${years.map((y) => row(`row-${y}`, `Coming in ${y}`, up.filter((m) => dateStr(m).startsWith(y)))).join("")}
+        <div class="home-tools">
+          <button class="search-bar" type="button" data-open-search>
+            <span aria-hidden="true">🔍</span> Search movies, actors, directors…
+            <kbd>/</kbd>
+          </button>
+          <a class="btn btn-ghost" href="${calHref(dayKey(Date.now()))}">📅 Release calendar</a>
+        </div>
+        ${row("row-top", `Top 10 Most Anticipated in ${rankKey() === "WW" ? "the World" : here}`, top.slice(0, 10), rankCard, "rail-ranked")}
+        ${row("row-week", `Releasing This Week in ${here}`, thisWeek, card, "",
+          `<a class="row-link" href="${calHref(dayKey(Date.now()), "week")}">Open calendar ›</a>`)}
+        ${row("row-upcoming", `Coming Soon in ${here}`, upcomingHere().slice(0, 30))}
+        ${rankKey() !== "WW" ? row("row-world", "Worldwide Most Anticipated", anticipated("WW").slice(0, 20)) : ""}
+        ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
+        ${languageRows()}
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
-        ${row("row-out", "Out Now", released())}
+        ${row("row-out", `Out Now in ${here}`, released().slice(0, 20))}
       </div>`;
     startEmbers($(".billboard canvas"), hero.hue);
+  }
+
+  // ---------- release calendar ----------
+  function firstDayOfWeek() {
+    try {
+      const loc = new Intl.Locale(`${LANG_BASE}-${COUNTRY}`);
+      const info = loc.getWeekInfo?.() || loc.weekInfo;
+      if (info?.firstDay) return info.firstDay % 7; // 0 = Sunday
+    } catch (_) { /* ignore */ }
+    return ["US", "CA", "JP", "BR", "IN", "MX", "KR", "PH", "IL", "ZA", "AU"].includes(COUNTRY) ? 0 : 1;
+  }
+
+  function releasesByDay() {
+    const map = new Map();
+    for (const m of listed()) {
+      const k = dateStr(m);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(m);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => datedHere(b) - datedHere(a) || (a.hot?.[rankKey()] || 999) - (b.hot?.[rankKey()] || 999));
+    }
+    return map;
+  }
+
+  function rangeFor(selT, mode) {
+    const d = new Date(selT);
+    if (mode === "month") {
+      return [new Date(d.getFullYear(), d.getMonth(), 1).getTime(), new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime()];
+    }
+    if (mode === "week") {
+      const shift = (d.getDay() - firstDayOfWeek() + 7) % 7;
+      const s = new Date(d.getFullYear(), d.getMonth(), d.getDate() - shift).getTime();
+      return [s, new Date(new Date(s).setDate(new Date(s).getDate() + 7)).getTime()];
+    }
+    return [selT, new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime()];
+  }
+
+  function countIn(map, [a, b]) {
+    let n = 0;
+    for (const [k, list] of map) { const t = parseDay(k); if (t >= a && t < b) n += list.length; }
+    return n;
+  }
+
+  function calendarEntry(m) {
+    const orig = origTitle(m);
+    return `
+      <a class="cal-item" href="${movieHref(m)}" style="${theme(m.hue)}">
+        <div class="cal-poster" style="${bg(m.poster || m.card)}"></div>
+        <div class="cal-body">
+          <strong>${esc(title(m))}</strong>
+          ${orig ? `<span class="cal-orig">${esc(orig)}</span>` : ""}
+          <span class="cal-meta">
+            ${m.lang ? `<span class="pill">${esc(languageName(m.lang))}</span>` : ""}
+            ${isRe(m) ? `<span class="pill pill-re">Re-release</span>` : ""}
+            ${m.certs?.[COUNTRY] ? `<span class="cert">${esc(m.certs[COUNTRY])}</span>` : ""}
+            ${datedHere(m) ? "" : `<span class="pill" title="No date announced in ${esc(countryName(COUNTRY))}">🌐 Worldwide date</span>`}
+            ${m.genres?.length ? `<span>${m.genres.slice(0, 3).map(esc).join(" · ")}</span>` : ""}
+          </span>
+          ${m.people?.length ? `<span class="cal-people">${m.people.slice(0, 3).map(esc).join(", ")}</span>` : ""}
+        </div>
+        <div class="cal-side">${countdown(m, "cd-mini")}</div>
+      </a>`;
+  }
+
+  function renderCalendar(selKey, mode = "day") {
+    document.title = "Release Calendar — Movie Countdown";
+    const todayT = startOfDay();
+    const selT = selKey && /^\d{4}-\d{2}-\d{2}$/.test(selKey) ? parseDay(selKey) : todayT;
+    const sel = new Date(selT);
+    const map = releasesByDay();
+    const here = esc(countryName(COUNTRY));
+
+    const todayN = countIn(map, rangeFor(todayT, "day"));
+    const weekN = countIn(map, rangeFor(todayT, "week"));
+    const monthN = countIn(map, rangeFor(todayT, "month"));
+
+    // Month grid
+    const first = new Date(sel.getFullYear(), sel.getMonth(), 1);
+    const lead = (first.getDay() - firstDayOfWeek() + 7) % 7;
+    const gridStart = new Date(first.getFullYear(), first.getMonth(), 1 - lead);
+    const weeks = Math.ceil((lead + new Date(sel.getFullYear(), sel.getMonth() + 1, 0).getDate()) / 7);
+    const weekdayNames = Array.from({ length: 7 }, (_, i) =>
+      new Date(2024, 0, 7 + ((firstDayOfWeek() + i) % 7)).toLocaleDateString(LANG, { weekday: "short" }));
+    const [rs, re] = rangeFor(selT, mode);
+
+    let cells = "";
+    for (let i = 0; i < weeks * 7; i++) {
+      const d = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+      const t = d.getTime(), k = dayKey(t);
+      const list = map.get(k) || [];
+      const cls = [
+        "cal-cell",
+        d.getMonth() !== sel.getMonth() ? "other" : "",
+        t === todayT ? "today" : "",
+        t === selT ? "selected" : "",
+        t >= rs && t < re && mode !== "day" ? "in-range" : "",
+        list.length ? "has" : "",
+      ].join(" ");
+      cells += `
+        <a class="${cls}" href="${calHref(k, mode)}" aria-label="${esc(longDate(t))}: ${plural(list.length, "release", "releases")}">
+          <span class="cal-num">${d.getDate()}</span>
+          ${list.length ? `<span class="cal-count">${list.length}</span>` : ""}
+          <span class="cal-thumbs">${list.slice(0, 3).map((m) => `<i style="${bg(m.poster)}"></i>`).join("")}</span>
+        </a>`;
+    }
+
+    // Selected range list, grouped by day
+    const days = [...map.keys()].filter((k) => { const t = parseDay(k); return t >= rs && t < re; }).sort();
+    const total = days.reduce((n, k) => n + map.get(k).length, 0);
+    const rangeLabel = mode === "day" ? longDate(selT)
+      : mode === "week" ? `${fmt(rs, { month: "short", day: "numeric" })} – ${fmt(re - DAY, { month: "short", day: "numeric", year: "numeric" })}`
+        : fmt(selT, { month: "long", year: "numeric" });
+    const prevMonth = dayKey(new Date(sel.getFullYear(), sel.getMonth() - 1, 1).getTime());
+    const nextMonth = dayKey(new Date(sel.getFullYear(), sel.getMonth() + 1, 1).getTime());
+    const step = mode === "week" ? 7 : 1;
+    const prevStep = mode === "month" ? prevMonth : dayKey(new Date(sel.getFullYear(), sel.getMonth(), sel.getDate() - step).getTime());
+    const nextStep = mode === "month" ? nextMonth : dayKey(new Date(sel.getFullYear(), sel.getMonth(), sel.getDate() + step).getTime());
+
+    app.innerHTML = `
+      <section class="calendar">
+        <header class="cal-head">
+          <div>
+            <p class="kicker">Release calendar · ${here}</p>
+            <h1 class="cal-title">${esc(fmt(selT, { month: "long", year: "numeric" }))}</h1>
+          </div>
+          <div class="cal-stats">
+            <a class="stat ${mode === "day" && selT === todayT ? "active" : ""}" href="${calHref(dayKey(todayT))}"><b>${todayN}</b><span>Today</span></a>
+            <a class="stat ${mode === "week" && rs <= todayT && todayT < re ? "active" : ""}" href="${calHref(dayKey(todayT), "week")}"><b>${weekN}</b><span>This week</span></a>
+            <a class="stat ${mode === "month" && rs <= todayT && todayT < re ? "active" : ""}" href="${calHref(dayKey(todayT), "month")}"><b>${monthN}</b><span>This month</span></a>
+          </div>
+        </header>
+
+        <div class="cal-layout">
+          <div class="cal-month">
+            <div class="cal-controls">
+              <a class="round" href="${calHref(prevMonth, mode)}" aria-label="Previous month">‹</a>
+              <a class="btn btn-solid btn-sm" href="${calHref(dayKey(todayT), mode)}">Today</a>
+              <a class="round" href="${calHref(nextMonth, mode)}" aria-label="Next month">›</a>
+              <div class="seg">
+                ${["day", "week", "month"].map((x) => `<a class="${x === mode ? "active" : ""}" href="${calHref(dayKey(selT), x)}">${x[0].toUpperCase() + x.slice(1)}</a>`).join("")}
+              </div>
+            </div>
+            <div class="cal-grid">
+              ${weekdayNames.map((w) => `<span class="cal-wd">${esc(w)}</span>`).join("")}
+              ${cells}
+            </div>
+            <p class="muted small">🌐 = no date announced in ${here} yet, so the worldwide date is used.</p>
+          </div>
+
+          <div class="cal-list">
+            <div class="cal-list-head">
+              <a class="round" href="${calHref(prevStep, mode)}" aria-label="Previous">‹</a>
+              <div>
+                <h2>${esc(rangeLabel)}</h2>
+                <p class="muted">${plural(total, "release", "releases")}${selT === todayT && mode === "day" ? " today" : ""}</p>
+              </div>
+              <a class="round" href="${calHref(nextStep, mode)}" aria-label="Next">›</a>
+            </div>
+            ${days.length ? days.map((k) => `
+              ${mode === "day" ? "" : `<h3 class="cal-day">${esc(longDate(parseDay(k)))} <span>${map.get(k).length}</span></h3>`}
+              ${map.get(k).map(calendarEntry).join("")}`).join("")
+              : `<div class="cal-empty">No releases on our list for this ${mode}.</div>`}
+          </div>
+        </div>
+      </section>`;
   }
 
   // ---------- movie page ----------
@@ -278,66 +511,123 @@
       <p class="person-actor">${esc(c.role ? c.actor : "Cast")}</p>
       <h3 class="person-role">${esc(c.role || c.actor)}</h3>
       ${c.tmdb ? `<span class="btn btn-outline btn-sm">See More</span>` : ""}`;
-    return c.tmdb
-      ? `<a class="person" href="${personHref(c.tmdb)}">${inner}</a>`
-      : `<article class="person">${inner}</article>`;
+    return c.tmdb ? `<a class="person" href="${personHref(c.tmdb)}">${inner}</a>` : `<article class="person">${inner}</article>`;
   }
+
+  const ytThumb = (v, q = "hqdefault") => `https://i.ytimg.com/vi/${encodeURIComponent(v.key)}/${q}.jpg`;
+  const playerPoster = (v, i) => `
+    <button class="player-poster" type="button" data-inline-play="${i}" style="${bg(ytThumb(v))}">
+      <span class="vt-play big">▶</span><span class="player-name">${esc(v.name)}</span>
+    </button>`;
+  const embed = (v, name) => `
+    <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.key)}?autoplay=1&rel=0&modestbranding=1&playsinline=1"
+      title="${esc(name)} — ${esc(v.name)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
 
   function videoSection(m) {
     if (!m.trailers?.length) return "";
-    const first = m.trailers[0];
     return `
       <section class="watch" id="watch">
         <p class="kicker">Trailers &amp; teasers</p>
-        <div class="player" data-player="${esc(m.id)}">
-          ${playerPoster(first, 0)}
-        </div>
+        <div class="player" data-player="${esc(m.id)}">${playerPoster(m.trailers[0], 0)}</div>
         ${m.trailers.length > 1 ? `
         <div class="video-list">
           ${m.trailers.map((v, i) => `
             <button class="video-thumb ${i === 0 ? "active" : ""}" type="button" data-inline="${i}">
-              <img src="https://i.ytimg.com/vi/${encodeURIComponent(v.key)}/mqdefault.jpg" alt="" loading="lazy">
+              <img src="${ytThumb(v, "mqdefault")}" alt="" loading="lazy">
               <span class="vt-name">${esc(v.name)}</span>
               <span class="vt-meta">${esc(v.type)}${v.published ? " · " + esc(shortDate(parseDay(v.published))) : ""}</span>
             </button>`).join("")}
         </div>` : ""}
       </section>`;
   }
-  const playerPoster = (v, i) => `
-    <button class="player-poster" type="button" data-inline-play="${i}" style="${bg(`https://i.ytimg.com/vi/${v.key}/hqdefault.jpg`)}">
-      <span class="vt-play big">▶</span><span class="player-name">${esc(v.name)}</span>
-    </button>`;
-  const embed = (v, title_) => `
-    <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.key)}?autoplay=1&rel=0&modestbranding=1&playsinline=1"
-      title="${esc(title_)} — ${esc(v.name)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
 
-  function renderMovie(m) {
+  // Official artwork with download buttons.
+  let artTab = "posters";
+  function artworkSection(m) {
+    const art = m.artwork;
+    if (!art) return "";
+    const tabs = [["posters", "Posters"], ["backdrops", "Backdrops"], ["logos", "Logos"]].filter(([k]) => art[k]?.length);
+    if (!tabs.length) return "";
+    if (!art[artTab]?.length) artTab = tabs[0][0];
+    const thumbSize = artTab === "posters" ? "w342" : artTab === "logos" ? "w300" : "w780";
+    return `
+      <section class="artwork" id="artwork">
+        <div class="art-head">
+          <p class="kicker">Artwork</p>
+          <div class="seg">${tabs.map(([k, label]) =>
+            `<button type="button" class="${k === artTab ? "active" : ""}" data-art-tab="${k}">${label} <small>${art[k].length}</small></button>`).join("")}</div>
+        </div>
+        <div class="art-grid art-${artTab}">
+          ${art[artTab].map(([path, w, h], i) => `
+            <figure class="art-item">
+              <div class="art-img"><img src="${IMG}/${thumbSize}${esc(path)}" alt="${esc(title(m))} ${artTab.slice(0, -1)} ${i + 1}" loading="lazy"></div>
+              <figcaption>
+                <span>${w} × ${h}</span>
+                <button class="btn btn-ghost btn-sm" type="button" data-download="${esc(path)}" data-name="${esc(`${m.id}-${artTab.slice(0, -1)}-${i + 1}`)}">⤓ Download</button>
+              </figcaption>
+            </figure>`).join("")}
+        </div>
+        <p class="muted small">Official promotional artwork via TMDB, full resolution. For personal use — artwork belongs to the studios.</p>
+      </section>`;
+  }
+
+  async function downloadArt(path, name) {
+    const url = `${IMG}/original${path}`;
+    const ext = (path.match(/\.\w+$/) || [".jpg"])[0];
+    try {
+      const res = await fetch(url, { mode: "cors" });
+      if (!res.ok) throw new Error(res.status);
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name + ext;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      toast("Downloading…");
+    } catch (_) {
+      open(url, "_blank", "noopener"); // fall back: open full size, long-press / right-click to save
+    }
+  }
+
+  let currentMovie = null;
+  function renderMovie(m, token) {
+    currentMovie = m;
     document.title = `${title(m)} — Movie Countdown`;
+    if (m.tmdb && !m._loaded) {
+      loadDetail(m).then(() => { if (token === routeToken && m._loaded) { const y = scrollY; renderMovie(m, token); scrollTo(0, y); } });
+    }
     const cast = m.cast || [];
-    const more = upcoming().filter((x) => x.id !== m.id);
+    const more = upcoming().filter((x) => x.id !== m.id && (x.lang === m.lang || x.genres?.some((g) => m.genres?.includes(g)))).slice(0, 20);
     const isCustom = custom.some((c) => c.id === m.id);
     const cert = m.certs?.[COUNTRY];
     const byline = m.directors?.length
       ? m.directors.map((d) => `<a href="${personHref(d.id)}">${esc(d.name)}</a>`).join(" &amp; ")
       : esc(m.director || "");
+    const orig = origTitle(m);
+    const rank = m.hot?.[rankKey()];
 
     app.innerHTML = `
       <header class="cine hero" style="${theme(m.hue)}">
         ${fireLayers(m.backdrop, orb)}
         <div class="hero-body">
-          ${isRe(m) ? `<p class="byline re">Re-release · Originally ${esc(m.originalDate?.slice(0, 4) || "")}</p>` : ""}
+          ${isRe(m) ? `<p class="byline re">Re-release · Originally ${esc(m.originalDate?.slice(0, 4) || "")}</p>`
+            : rank && rank <= 10 ? `<p class="byline re">#${rank} most anticipated in ${rankKey() === "WW" ? "the world" : esc(countryName(COUNTRY))}</p>` : ""}
           ${byline ? `<p class="byline">A film by <strong>${byline}</strong></p>` : ""}
           <h1 class="mega" style="--len:${longestWord(title(m))}">${esc(title(m))}</h1>
+          ${orig ? `<p class="orig-title" lang="${esc(m.lang || "")}">${esc(orig)}</p>` : ""}
           ${tagline(m) ? `<p class="tagline">${esc(tagline(m))}</p>` : ""}
           ${countdown(m, "cd-hero")}
           ${localNote(m)}
           <div class="cta cta-center">
-            <a class="btn btn-outline" href="${esc(ticketHref(m))}" target="_blank" rel="noopener">Get Tickets</a>
+            ${ticketBtn(m)}
             ${trailerBtn(m)}
           </div>
-          <button class="link" type="button" data-ics="${esc(m.id)}">＋ Add to calendar</button>
+          <div class="hero-links">
+            <button class="link" type="button" data-ics="${esc(m.id)}">＋ Add to calendar</button>
+            <a class="link" href="${calHref(dateStr(m))}">📅 See what else releases that day</a>
+          </div>
         </div>
-        <a class="scroll-hint" href="#cast" data-scroll="${cast.length ? "cast" : "about"}" aria-label="Scroll down">⌄</a>
+        <a class="scroll-hint" href="#about" data-scroll="${cast.length ? "cast" : "about"}" aria-label="Scroll down">⌄</a>
       </header>
 
       ${cast.length ? `
@@ -353,9 +643,11 @@
             <button class="round next" type="button" aria-label="Next">›</button>
           </div>
         </div>
-      </section>` : ""}
+      </section>` : m.tmdb && !m._loaded ? `<div class="loading-strip"><div class="spinner"></div></div>` : ""}
 
       ${videoSection(m)}
+
+      ${artworkSection(m)}
 
       <section class="about" id="about">
         <div>
@@ -366,6 +658,7 @@
           <div><dt>Release in ${esc(countryName(COUNTRY))}</dt><dd>${datedHere(m) ? esc(longDate(time(m))) : "Not announced yet"}</dd></div>
           ${!datedHere(m) ? `<div><dt>Worldwide release</dt><dd>${esc(longDate(parseDay(m.date)))}</dd></div>` : ""}
           ${isRe(m) && m.originalDate ? `<div><dt>Original release</dt><dd>${esc(longDate(parseDay(m.originalDate)))}</dd></div>` : ""}
+          ${m.lang ? `<div><dt>Language</dt><dd>${esc(languageName(m.lang))}${m.origin?.length ? ` · ${m.origin.map((c) => esc(countryName(c))).join(", ")}` : ""}</dd></div>` : ""}
           ${cert ? `<div><dt>Rating</dt><dd><span class="cert">${esc(cert)}</span></dd></div>` : ""}
           ${byline ? `<div><dt>Director</dt><dd>${byline}</dd></div>` : ""}
           ${m.genres?.length ? `<div><dt>Genre</dt><dd>${m.genres.map(esc).join(", ")}</dd></div>` : ""}
@@ -373,10 +666,11 @@
           ${cast.length ? `<div><dt>Starring</dt><dd>${cast.slice(0, 4).map((c) =>
             c.tmdb ? `<a href="${personHref(c.tmdb)}">${esc(c.actor)}</a>` : esc(c.actor)).join(", ")}</dd></div>` : ""}
         </dl>
+        ${m.official ? `<div class="links"><a class="btn btn-ghost btn-sm" href="${esc(m.official)}" target="_blank" rel="noopener">Official site ↗</a></div>` : ""}
         ${isCustom ? `<button class="btn btn-ghost btn-sm" type="button" data-remove="${esc(m.id)}">Remove this countdown</button>` : ""}
       </section>
 
-      <div class="rows">${row("row-more", "More Countdowns", more)}</div>`;
+      <div class="rows">${row("row-more", "You Might Also Like", more)}</div>`;
 
     startEmbers($(".hero canvas"), m.hue);
     const castCanvas = $(".cast canvas");
@@ -394,7 +688,6 @@
     return peopleCache.get(id);
   }
 
-  // A credit from a person's filmography, linked to the full page when we have it.
   function creditInfo(f, personId) {
     const full = byTmdb.get(f.id);
     if (full) return { href: movieHref(full), t: time(full), title: title(full), poster: full.poster || f.poster, full };
@@ -431,15 +724,15 @@
     document.title = `${p.name} — Movie Countdown`;
     const now = Date.now();
     const credits = p.credits || [];
+    const tOf = (f) => creditInfo(f, p.id).t;
     const upcomingCredits = credits.filter((f) => {
       const c = creditInfo(f, p.id);
       return (c.t === null || c.t > now) && !(c.full && isRe(c.full));
-    }).sort((a, b) => (creditInfo(a, p.id).t ?? Infinity) - (creditInfo(b, p.id).t ?? Infinity));
+    }).sort((a, b) => (tOf(a) ?? Infinity) - (tOf(b) ?? Infinity));
     const backInCinemas = credits.filter((f) => { const m = byTmdb.get(f.id); return m && isRe(m) && visible(m); });
     const known = (p.knownFor || []).map((id) => credits.find((f) => f.id === id)).filter(Boolean);
     const past = credits.filter((f) => f.date && parseDay(f.date) <= now && !upcomingCredits.includes(f));
-    const backdrop = credits.map((f) => byTmdb.get(f.id)?.backdrop).find(Boolean) ||
-      known.map((f) => f.backdrop).find(Boolean);
+    const backdrop = credits.map((f) => byTmdb.get(f.id)?.backdrop).find(Boolean) || known.map((f) => f.backdrop).find(Boolean);
 
     const byYear = {};
     for (const f of credits) (byYear[f.date ? f.date.slice(0, 4) : "TBA"] ||= []).push(f);
@@ -448,6 +741,7 @@
     const bio = (p.bio || "").split(/\n+/).filter(Boolean);
     const born = p.birthday ? `Born ${esc(longDate(parseDay(p.birthday)))}${p.deathday ? "" : ` (age ${age(p.birthday)})`}` : "";
     const died = p.deathday ? `Died ${esc(longDate(parseDay(p.deathday)))} (aged ${age(p.birthday, p.deathday)})` : "";
+    const posters = (f) => pcard(f, p.id);
 
     app.innerHTML = `
       <header class="cine phero" style="${theme(p.hue)}">
@@ -471,15 +765,15 @@
       </header>
 
       <div class="rows prows">
-        ${row("p-upcoming", "Upcoming", upcomingCredits, (f) => pcard(f, p.id), "rail-posters")}
-        ${row("p-back", `Back in Cinemas · ${esc(countryName(COUNTRY))}`, backInCinemas, (f) => pcard(f, p.id), "rail-posters")}
-        ${row("p-known", "Known For", known, (f) => pcard(f, p.id), "rail-posters")}
-        ${row("p-past", "Latest Films", past.slice(0, 20), (f) => pcard(f, p.id), "rail-posters")}
+        ${row("p-upcoming", "Upcoming", upcomingCredits, posters, "rail-posters")}
+        ${row("p-back", `Back in Cinemas · ${esc(countryName(COUNTRY))}`, backInCinemas, posters, "rail-posters")}
+        ${row("p-known", "Known For", known, posters, "rail-posters")}
+        ${row("p-past", "Latest Films", past.slice(0, 20), posters, "rail-posters")}
       </div>
 
       ${p.photos?.length > 1 ? `
       <section class="row gallery">
-        <h2 class="row-title">Photos</h2>
+        <div class="row-head"><h2 class="row-title">Photos</h2></div>
         ${rail(p.photos, (u) => `<div class="gphoto" style="${bg(u)}"></div>`)}
       </section>` : ""}
 
@@ -498,7 +792,6 @@
     startEmbers($(".phero canvas"), p.hue, 0.6);
   }
 
-  // A film from someone's filmography that isn't on our countdown list.
   function renderFilmPage(p, f) {
     document.title = `${f.title} — Movie Countdown`;
     const t = f.date ? parseDay(f.date) : null;
@@ -533,65 +826,203 @@
       <p><a class="btn btn-solid" href="#/">Back to home</a></p></section>`;
   }
 
+  // ---------- search ----------
+  const searchDlg = $("#search");
+  const searchInput = $("#searchInput");
+  const searchResults = $("#searchResults");
+  let peopleIndex = null;
+  let searchFilter = "all";
+  const norm = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "");
+
+  function openSearch() {
+    if (!searchDlg.open) searchDlg.showModal();
+    searchInput.select();
+    if (!peopleIndex) {
+      peopleIndex = [];
+      fetch("data/people-index.json").then((r) => (r.ok ? r.json() : [])).then((list) => {
+        peopleIndex = list.map(([id, name, photo, dept]) => ({ id, name, photo: photo ? `${IMG}/w185${photo}` : null, dept, n: norm(name) }));
+        runSearch();
+      }).catch(() => {});
+    }
+    runSearch();
+  }
+
+  function runSearch() {
+    const q = norm(searchInput.value.trim());
+    if (!q) {
+      const pick = anticipated().slice(0, 8);
+      searchResults.innerHTML = `<p class="search-label">Most anticipated in ${esc(countryName(COUNTRY))}</p>${pick.map(searchMovie).join("")}`;
+      return;
+    }
+    const words = q.split(/\s+/);
+    const score = (hay, extra = "") => {
+      const h = norm(hay), x = norm(extra);
+      if (!words.every((w) => h.includes(w) || x.includes(w))) return 0;
+      return (h.startsWith(q) ? 3 : h.includes(q) ? 2 : 1);
+    };
+    const f = searchFilter;
+    const isDirector = (p) => p.dept === "Directing";
+    const isActor = (p) => p.dept === "Acting";
+    let movies = f === "actors" || f === "directors" ? [] : all().map((m) => {
+      const s = Math.max(
+        score(title(m)), score(m.title), score(m.originalTitle || ""),
+        score([title(m), m.originalTitle, m.title].join(" "), [m.director, ...(m.people || []), ...(m.genres || []), languageName(m.lang || "")].join(" ")) * 0.5,
+      );
+      return [s, m];
+    }).filter(([s]) => s > 0).sort((a, b) => b[0] - a[0] || byDate(a[1], b[1])).slice(0, 12).map(([, m]) => m);
+    const people = f === "movies" ? [] : (peopleIndex || [])
+      .filter((p) => (f === "directors" ? isDirector(p) : f === "actors" ? isActor(p) : true))
+      .filter((p) => words.every((w) => p.n.includes(w)))
+      .sort((a, b) => b.n.startsWith(q) - a.n.startsWith(q)).slice(0, 12);
+
+    // With the Actors / Directors filter, also list their films on our countdown list.
+    let label = "Movies";
+    if (f === "actors" || f === "directors") {
+      const field = (m) => (f === "directors" ? [m.director || ""] : m.people || []);
+      movies = all().filter((m) => field(m).some((n) => words.every((w) => norm(n).includes(w)))).sort(byDate).slice(0, 12);
+      label = f === "directors" ? "Directed by" : "Starring";
+    }
+
+    searchResults.innerHTML = `
+      ${people.length ? `<p class="search-label">${f === "directors" ? "Directors" : f === "actors" ? "Actors" : "People"}</p><div class="search-people">${people.map((p) => `
+        <a class="sp" href="${personHref(p.id)}">
+          <span class="sp-photo" style="${bg(p.photo)}">${p.photo ? "" : esc(initials(p.name))}</span>
+          <strong>${esc(p.name)}</strong><span>${esc(p.dept === "Acting" ? "Actor" : p.dept === "Directing" ? "Director" : p.dept || "")}</span>
+        </a>`).join("")}</div>` : ""}
+      ${movies.length ? `<p class="search-label">${label}</p>${movies.map(searchMovie).join("")}` : ""}
+      ${!movies.length && !people.length ? `<p class="search-empty">No results for “${esc(searchInput.value)}”.</p>` : ""}`;
+  }
+
+  function searchMovie(m) {
+    const orig = origTitle(m);
+    return `
+      <a class="sm" href="${movieHref(m)}">
+        <span class="sm-poster" style="${bg(m.poster)}"></span>
+        <span class="sm-body">
+          <strong>${esc(title(m))}</strong>
+          ${orig ? `<span class="sm-orig">${esc(orig)}</span>` : ""}
+          <span class="sm-meta">${esc(shortDate(time(m)))}${m.lang ? ` · ${esc(languageName(m.lang))}` : ""}${m.people?.length ? ` · ${m.people.slice(0, 2).map(esc).join(", ")}` : ""}</span>
+        </span>
+        <span class="sm-cd">${isOut(m) ? `<span class="muted small">${isRe(m) ? "Back in cinemas" : "Out now"}</span>` : `${Math.ceil((time(m) - Date.now()) / DAY)}<small>days</small>`}</span>
+      </a>`;
+  }
+
+  searchInput.addEventListener("input", runSearch);
+  $("#searchFilters").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-filter]");
+    if (!b) return;
+    searchFilter = b.dataset.filter;
+    $$("#searchFilters button").forEach((x) => x.classList.toggle("active", x === b));
+    searchInput.placeholder = { all: "Search movies, actors, directors, languages…", movies: "Search movie titles…",
+      actors: "Search actors…", directors: "Search directors…" }[searchFilter];
+    searchInput.focus();
+    runSearch();
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { const first = $("a", searchResults); if (first) { location.hash = first.getAttribute("href"); searchDlg.close(); } }
+  });
+  searchResults.addEventListener("click", (e) => { if (e.target.closest("a")) searchDlg.close(); });
+  searchDlg.addEventListener("click", (e) => { if (e.target === searchDlg) searchDlg.close(); });
+  $("#searchBtn").addEventListener("click", openSearch);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "/" && !/input|textarea|select/i.test(document.activeElement?.tagName || "") && !searchDlg.open) {
+      e.preventDefault(); openSearch();
+    }
+  });
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Pre-rendered glow sprites (one per hue) — far cheaper than canvas shadowBlur.
+  const spriteCache = new Map();
+  function glowSprite(hue) {
+    const key = Math.round(hue / 5) * 5;
+    if (!spriteCache.has(key)) {
+      const c = document.createElement("canvas");
+      c.width = c.height = 32;
+      const g = c.getContext("2d");
+      const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+      grad.addColorStop(0, `hsla(${key},100%,85%,1)`);
+      grad.addColorStop(0.25, `hsla(${key},100%,62%,.9)`);
+      grad.addColorStop(1, `hsla(${key},100%,50%,0)`);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 32, 32);
+      spriteCache.set(key, c);
+    }
+    return spriteCache.get(key);
+  }
 
   function startEmbers(canvas, hue, density = 1) {
     if (!canvas || reduceMotion) return;
     const ctx = canvas.getContext("2d");
     const hues = hue || [20, 40];
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = Math.min(devicePixelRatio || 1, 1.5);
     let w, h, ps;
-    const make = (fresh) => ({
-      x: Math.random() * w, y: fresh ? Math.random() * h : h + 10,
-      r: (Math.random() * 1.8 + 0.4) * dpr, vy: (Math.random() * 0.6 + 0.2) * dpr,
-      vx: (Math.random() - 0.5) * 0.3 * dpr, life: Math.random(),
-      hue: hues[Math.random() < 0.6 ? 0 : 1] + (Math.random() * 20 - 10),
-    });
+    const make = (fresh) => {
+      const hh = (hues[Math.random() < 0.6 ? 0 : 1] + Math.random() * 20 - 10 + 360) % 360;
+      return {
+        x: Math.random() * w, y: fresh ? Math.random() * h : h + 10,
+        r: (Math.random() * 5 + 3) * dpr, vy: (Math.random() * 0.6 + 0.2) * dpr,
+        vx: (Math.random() - 0.5) * 0.3 * dpr, life: Math.random(), sprite: glowSprite(hh),
+      };
+    };
     const resize = () => {
       w = canvas.width = canvas.offsetWidth * dpr;
       h = canvas.height = canvas.offsetHeight * dpr;
-      ps = Array.from({ length: Math.round((w * h) / (9000 * dpr * dpr) * density) }, () => make(true));
+      const n = Math.min(110, Math.round((w * h) / (11000 * dpr * dpr) * density));
+      ps = Array.from({ length: n }, () => make(true));
     };
     resize();
-    const state = { canvas, raf: 0, resize };
-    const frame = () => {
+    const state = { canvas, raf: 0, resize, visible: true, io: null };
+    // Only animate while the canvas is on screen.
+    if ("IntersectionObserver" in window) {
+      state.io = new IntersectionObserver(([e]) => { state.visible = e.isIntersecting; });
+      state.io.observe(canvas);
+    }
+    let last = 0;
+    const frame = (now) => {
+      state.raf = requestAnimationFrame(frame);
+      if (!state.visible || document.hidden || now - last < 33) return; // ~30 fps is plenty
+      last = now;
       ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = "lighter";
       for (const p of ps) {
         p.y -= p.vy; p.x += p.vx + Math.sin((p.y + p.life * 500) / 60) * 0.25;
         p.life += 0.004;
         if (p.y < -10) Object.assign(p, make(false));
-        const a = 0.35 + 0.45 * Math.abs(Math.sin(p.life * 6));
-        ctx.fillStyle = `hsla(${p.hue},100%,62%,${a})`;
-        ctx.shadowColor = `hsla(${p.hue},100%,55%,1)`;
-        ctx.shadowBlur = 8 * dpr;
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 0.35 + 0.5 * Math.abs(Math.sin(p.life * 6));
+        ctx.drawImage(p.sprite, p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
       }
-      state.raf = requestAnimationFrame(frame);
+      ctx.globalAlpha = 1;
     };
-    frame();
+    state.raf = requestAnimationFrame(frame);
     embers.push(state);
   }
 
   function stopEmbers() {
-    embers.forEach((e) => cancelAnimationFrame(e.raf));
+    embers.forEach((e) => { cancelAnimationFrame(e.raf); e.io?.disconnect(); });
     embers = [];
   }
   addEventListener("resize", () => embers.forEach((e) => e.resize()));
 
   // ---------- routing ----------
   let routeToken = 0;
+  const section = (h) => (h.match(/^#\/(\w+)/) || [, "home"])[1];
+
   function route() {
     stopEmbers();
     const token = ++routeToken;
     const h = decodeURIComponent(location.hash);
     let m;
+    $$(".nav-links a").forEach((a) => a.classList.toggle("active", a.dataset.section === section(h)));
 
     if ((m = h.match(/^#\/movie\/(.+)$/))) {
       const movie = all().find((x) => x.id === m[1]);
-      return movie ? renderMovie(movie) : renderHome();
+      return movie ? renderMovie(movie, token) : renderHome();
+    }
+    if ((m = h.match(/^#\/calendar(?:\/(\d{4}-\d{2}-\d{2}))?(?:\/(week|month))?$/))) {
+      return renderCalendar(m[1], m[2] || "day");
     }
     if ((m = h.match(/^#\/person\/(\d+)$/))) {
       app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
@@ -612,11 +1043,19 @@
     renderHome();
   }
 
-  addEventListener("hashchange", () => { route(); scrollTo(0, 0); });
+  let lastHash = location.hash;
+  addEventListener("hashchange", () => {
+    const keepScroll = section(lastHash) === "calendar" && section(location.hash) === "calendar";
+    lastHash = location.hash;
+    route();
+    if (!keepScroll) scrollTo(0, 0);
+  });
 
   // ---------- interactions ----------
   document.addEventListener("click", (e) => {
     const t = e.target;
+
+    if (t.closest("[data-open-search]")) return openSearch();
 
     const scrollLink = t.closest("[data-scroll]");
     if (scrollLink) {
@@ -626,21 +1065,40 @@
       return;
     }
 
-    const railBtn = t.closest(".rail-btn, .round");
+    const railBtn = t.closest("button.rail-btn, button.round");
     if (railBtn) {
       const scope = railBtn.closest(".rail-wrap") || railBtn.closest(".cast-body");
-      const r = $(".rail", scope);
-      r.scrollBy({ left: (railBtn.classList.contains("next") ? 1 : -1) * r.clientWidth * 0.85, behavior: "smooth" });
+      const r = scope && $(".rail", scope);
+      if (r) r.scrollBy({ left: (railBtn.classList.contains("next") ? 1 : -1) * r.clientWidth * 0.85, behavior: "smooth" });
       return;
     }
 
     const tr_ = t.closest("[data-trailer]");
-    if (tr_) return openTrailer(all().find((m) => m.id === tr_.dataset.trailer), +(tr_.dataset.index || 0));
+    if (tr_) {
+      const m = all().find((x) => x.id === tr_.dataset.trailer);
+      if (m) loadDetail(m).then(() => openTrailer(m, +(tr_.dataset.index || 0)));
+      return;
+    }
 
     const pick = t.closest("[data-video]");
     if (pick) return playVideo(+pick.dataset.video);
 
-    // Inline player on the movie page
+    const tk = t.closest("[data-tickets]");
+    if (tk) return openTickets(all().find((x) => x.id === tk.dataset.tickets));
+
+    const dl = t.closest("[data-download]");
+    if (dl) return downloadArt(dl.dataset.download, dl.dataset.name);
+
+    const at = t.closest("[data-art-tab]");
+    if (at) {
+      artTab = at.dataset.artTab;
+      const sec = $("#artwork");
+      if (currentMovie && sec) sec.outerHTML = artworkSection(currentMovie);
+      return;
+    }
+
+    if (t.closest("[data-open-location]")) return openLocation();
+
     const inline = t.closest("[data-inline], [data-inline-play]");
     if (inline) {
       const player = $("[data-player]");
@@ -655,8 +1113,7 @@
 
     const moreBio = t.closest(".more-bio");
     if (moreBio) {
-      const el = $(".pbio");
-      const open_ = el.classList.toggle("clamp");
+      const open_ = $(".pbio").classList.toggle("clamp");
       moreBio.textContent = open_ ? "Read full biography" : "Show less";
       return;
     }
@@ -677,8 +1134,8 @@
   const trailer = $("#trailer");
   let playing = null;
   function openTrailer(m, index = 0) {
-    if (!m?.trailers?.length) return;
-    $$("[data-player] iframe").forEach((f) => f.remove()); // don't play two at once
+    if (!m?.trailers?.length) return toast("No trailer yet");
+    $$("[data-player] iframe").forEach((f) => f.remove());
     playing = { m, vids: m.trailers };
     $(".playlist", trailer).innerHTML = playing.vids.length > 1
       ? playing.vids.map((v, i) => `<button type="button" data-video="${i}">${esc(v.name)}</button>`).join("") : "";
@@ -720,10 +1177,93 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
-  // Country picker
+  // Location: country + city
+  const locDialog = $("#locDialog");
   const countrySel = $("#country");
+  const cityInput = $("#cityInput");
+  function updateLocText() {
+    $("#locText").textContent = CITY ? `${CITY}` : countryName(COUNTRY);
+    $("#locBtn").title = `${CITY ? CITY + ", " : ""}${countryName(COUNTRY)}`;
+  }
+  function renderCityChips() {
+    const cities = TICKETS[COUNTRY]?.cities || [];
+    $("#cityChips").innerHTML = cities.length
+      ? [`<button type="button" class="${!CITY ? "active" : ""}" data-city="">Whole country</button>`,
+        ...cities.map((c) => `<button type="button" class="${c === CITY ? "active" : ""}" data-city="${esc(c)}">${esc(c)}</button>`)].join("")
+      : `<p class="muted small">No city list for ${esc(countryName(COUNTRY))} yet — type your city below.</p>`;
+    cityInput.value = CITY && !cities.includes(CITY) ? CITY : "";
+  }
+  function setCity(c) {
+    CITY = c.trim();
+    try { CITY ? localStorage.setItem(cityKey(COUNTRY), CITY) : localStorage.removeItem(cityKey(COUNTRY)); } catch (_) { /* ignore */ }
+    renderCityChips();
+    updateLocText();
+    if (ticketDialog.open && ticketFor) openTickets(ticketFor);
+  }
+  function openLocation() {
+    renderCityChips();
+    if (!locDialog.open) locDialog.showModal();
+  }
+  $("#locBtn").addEventListener("click", openLocation);
+  $("#cityChips").addEventListener("click", (e) => { const b = e.target.closest("[data-city]"); if (b) setCity(b.dataset.city); });
+  cityInput.addEventListener("change", () => setCity(cityInput.value));
+  $("#locDone").addEventListener("click", () => { if (cityInput.value.trim() && cityInput.value.trim() !== CITY) setCity(cityInput.value); locDialog.close(); });
+  locDialog.addEventListener("click", (e) => { if (e.target === locDialog) locDialog.close(); });
+
+  // Tickets: where to buy in the visitor's city
+  const ticketDialog = $("#ticketDialog");
+  let ticketFor = null;
+  const gsearch = (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+  function openTickets(m) {
+    if (!m) return;
+    ticketFor = m;
+    const info = TICKETS[COUNTRY];
+    const place = CITY || countryName(COUNTRY);
+    const name = title(m);
+    const days = Math.ceil((time(m) - Date.now()) / DAY);
+    const status = !datedHere(m)
+      ? `<p class="tk-status warn">No release date announced in ${esc(countryName(COUNTRY))} yet. Worldwide release: ${esc(longDate(parseDay(m.date)))}.</p>`
+      : isOut(m)
+        ? `<p class="tk-status ok">● ${isRe(m) ? "Back in cinemas" : "Now showing"} in ${esc(countryName(COUNTRY))}</p>`
+        : `<p class="tk-status">Releases ${esc(longDate(time(m)))} — in ${plural(days, "day", "days")}. Advance bookings usually open 1–4 weeks before release.</p>`;
+    $(".tk-body", ticketDialog).innerHTML = `
+      <div class="tk-movie" style="${theme(m.hue)}">
+        <span class="tk-poster" style="${bg(m.poster)}"></span>
+        <div>
+          <p class="kicker">Get tickets</p>
+          <h2>${esc(name)}</h2>
+          <p class="muted">${esc(countryName(COUNTRY))}${m.certs?.[COUNTRY] ? ` · <span class="cert">${esc(m.certs[COUNTRY])}</span>` : ""}${m.runtime ? ` · ${Math.floor(m.runtime / 60)}h ${m.runtime % 60}m` : ""}</p>
+        </div>
+      </div>
+      ${status}
+      <button class="tk-loc" type="button" data-open-location>
+        <span>📍 ${esc(CITY ? `${CITY}, ${countryName(COUNTRY)}` : countryName(COUNTRY))}</span>
+        <span class="tk-change">${CITY ? "Change city" : "Choose your city"} ›</span>
+      </button>
+      <p class="search-label">Where to book in ${esc(place)}</p>
+      <div class="tk-list">
+        ${(info?.providers || []).map((p) => `
+          <a class="tk-provider" href="${esc(gsearch(`${name} ${CITY || ""} tickets site:${p.domain}`))}" target="_blank" rel="noopener">
+            <span class="tk-logo">${esc(p.name.slice(0, 1))}</span>
+            <span class="tk-name"><strong>${esc(p.name)}</strong><small>${esc(p.domain)}</small></span>
+            <span class="tk-go">Book ›</span>
+          </a>`).join("")}
+        <a class="tk-provider all" href="${esc(gsearch(`${name} showtimes ${place}`))}" target="_blank" rel="noopener">
+          <span class="tk-logo">🎬</span>
+          <span class="tk-name"><strong>All showtimes in ${esc(place)}</strong><small>Every cinema near you</small></span>
+          <span class="tk-go">Open ›</span>
+        </a>
+      </div>
+      ${!info ? `<p class="muted small">We don't have a list of ticket sites for ${esc(countryName(COUNTRY))} yet.</p>` : ""}
+      <button class="link" type="button" data-ics="${esc(m.id)}">＋ Remind me — add release day to my calendar</button>`;
+    if (!ticketDialog.open) ticketDialog.showModal();
+  }
+  $(".close", ticketDialog).addEventListener("click", () => ticketDialog.close());
+  ticketDialog.addEventListener("click", (e) => { if (e.target === ticketDialog) ticketDialog.close(); });
+
+  // Country list
   function fillCountries() {
-    const codes = new Set([COUNTRY]);
+    const codes = new Set([COUNTRY, ...REGIONS]);
     DATA.movies.forEach((m) => Object.keys(m.dates || {}).forEach((c) => codes.add(c)));
     const list = [...codes].map((c) => [c, countryName(c)]).sort((a, b) => a[1].localeCompare(b[1], LANG));
     countrySel.innerHTML = list.map(([c, n]) => `<option value="${c}" ${c === COUNTRY ? "selected" : ""}>${esc(n)}</option>`).join("");
@@ -731,8 +1271,11 @@
   countrySel.addEventListener("change", () => {
     COUNTRY = countrySel.value;
     try { localStorage.setItem(COUNTRY_KEY, COUNTRY); } catch (_) { /* ignore */ }
+    CITY = loadCity(COUNTRY);
+    renderCityChips();
+    updateLocText();
     route();
-    toast(`Showing release dates for ${countryName(COUNTRY)}`);
+    if (ticketDialog.open && ticketFor) openTickets(ticketFor);
   });
 
   // Add custom movie
@@ -790,6 +1333,7 @@
   document.documentElement.lang = LANG;
 
   fillCountries();
+  updateLocText();
   route();
   onScroll();
   setInterval(tick, 1000);

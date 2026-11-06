@@ -10,13 +10,19 @@ A cinematic, streaming-style website with live countdowns to upcoming movie rele
   - `data/people/<id>.json` — a profile for each cast member and director (bio, photos, filmography)
   - `data/i18n/<lang>.json` — translated titles, taglines and overviews
 - Re-releases: classic films with an upcoming cinema date in any country listed in `reReleaseRegions` are added automatically.
-- `.github/workflows/update-movies.yml` — runs the script every day (and on every push), commits the new `movies.js`, and deploys the site to GitHub Pages.
+- `.github/workflows/update-movies.yml` — runs the script every day (and on every push) and deploys the site to GitHub Pages. The generated data (`movies.js`, `data/`) is built fresh on each run and is not committed.
+- `tickets.js` — major cities and ticket sites for each country (edit to add more).
 
 ## On the site
 
 - Visitors see release dates, age ratings and countdowns for **their own country** (detected from their time zone, changeable with the 📍 picker), in **their own language** where TMDB has a translation.
 - Every cast member and director has a profile page (`#/person/<id>`) with their bio, photos, upcoming films, re-releases and full filmography.
 - Trailers and teasers play right on the movie page.
+- **Most anticipated** films for the visitor's country — mixing the biggest releases there with local films (e.g. Hindi, Tamil, Telugu films in India).
+- **Release calendar** (`#/calendar`) — month grid, Today button, counts for today / this week / this month.
+- **Search** with All / Movies / Actors / Directors filters.
+- **Get Tickets** — ticket sites for the visitor's city.
+- **Artwork** — official posters, backdrops and logos to download in full resolution.
 
 ## Setup
 
