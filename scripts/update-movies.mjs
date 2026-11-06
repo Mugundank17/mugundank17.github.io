@@ -266,6 +266,14 @@ async function buildMovie(id, kind) {
   });
   if (!d.poster_path && !d.backdrop_path) return null;
   const { dates, certs, theatrical, digital, premiere } = datesByCountry(d, kind === "rerelease");
+  // Where to watch, every country (stored in the per-movie detail file).
+  const watch = {};
+  for (const [cc, w] of Object.entries(d["watch/providers"]?.results || {})) {
+    const ids = (list) => (list || []).map((p) => { PROVIDERS[p.provider_id] ||= [p.provider_name, p.logo_path]; return p.provider_id; });
+    const entry = { f: ids(w.flatrate), a: ids(w.ads), r: ids(w.rent), b: ids(w.buy) };
+    for (const k of Object.keys(entry)) if (!entry[k].length) delete entry[k];
+    if (Object.keys(entry).length) watch[cc] = entry;
+  }
   // Streaming services per country (only the countries we rank, to keep the index small).
   const ott = {};
   for (const [cc, w] of Object.entries(d["watch/providers"]?.results || {})) {
@@ -314,6 +322,7 @@ async function buildMovie(id, kind) {
     director: directors.map((c) => c.name).join(" & "),
     people: cast.slice(0, 4).map((c) => c.name),
     video: vids[0] ? vids[0].type : null,
+    pop: Math.round((d.popularity || 0) * 10) / 10,
     trailerDate: vids.map((v) => v.published).filter(Boolean).sort().pop() || null,
     hot: {},
   };
@@ -325,6 +334,7 @@ async function buildMovie(id, kind) {
     cast: cast.map((c) => ({ actor: c.name, role: c.character || "", photo: img("w185", c.profile_path), tmdb: c.id })),
     trailers: vids,
     official: d.homepage || null,
+    watch,
     // Official artwork for the download section (TMDB file paths).
     artwork: {
       posters: topImages(d.images?.posters, 12),
@@ -333,6 +343,52 @@ async function buildMovie(id, kind) {
     },
   };
   return { index, detail, i18n: translations(d), people: [...cast.map((c) => c.id), ...directors.map((c) => c.id)] };
+}
+
+const PROVIDERS = {}; // provider id -> [name, logo path]
+
+// ---------- date changes (delays) reported by TMDB in the last 14 days ----------
+async function recentDateChanges(id) {
+  try {
+    const { changes = [] } = await tmdb(`/movie/${id}/changes`, { start_date: isoDaysFromNow(-14), end_date: TODAY });
+    const items = changes.find((c) => c.key === "release_dates")?.items || [];
+    const out = [];
+    const day = (v) => v?.release_date?.slice(0, 10);
+    for (const it of items) {
+      const v = it.value, o = it.original_value;
+      if (it.action === "updated" && v && o && v.iso_3166_1 === o.iso_3166_1 && [2, 3, 4].includes(v.type) && day(v) !== day(o)) {
+        out.push([v.iso_3166_1, day(o), day(v), it.time.slice(0, 10)]);
+      }
+    }
+    // A date deleted and re-added for the same country and type also counts.
+    const del = items.filter((i) => i.action === "deleted" && i.original_value);
+    const add = items.filter((i) => i.action === "added" && i.value);
+    for (const dl of del) {
+      const o = dl.original_value;
+      const a = add.find((x) => x.value.iso_3166_1 === o.iso_3166_1 && x.value.type === o.type && [2, 3, 4].includes(o.type));
+      if (a && day(a.value) !== day(o)) out.push([o.iso_3166_1, day(o), day(a.value), a.time.slice(0, 10)]);
+    }
+    return out;
+  } catch { return []; }
+}
+
+// ---------- film history (for "On this day" / release history) ----------
+async function buildHistory(fromYear, toYear, pages) {
+  const byMonth = Array.from({ length: 12 }, () => []);
+  const years = [];
+  for (let y = fromYear; y <= toYear; y++) years.push(y);
+  await pool(years, 6, async (y) => {
+    for (let page = 1; page <= pages; page++) {
+      const { results } = await tmdb("/discover/movie", {
+        primary_release_year: y, sort_by: "vote_count.desc", include_adult: "false", page,
+      });
+      for (const r of results) {
+        if (!r.release_date || !r.poster_path || r.vote_count < 50) continue;
+        byMonth[+r.release_date.slice(5, 7) - 1].push([r.id, r.title, r.release_date, r.poster_path, r.original_language, r.vote_count]);
+      }
+    }
+  });
+  return byMonth.map((list) => list.sort((a, b) => a[2].slice(5).localeCompare(b[2].slice(5)) || b[5] - a[5]));
 }
 
 // ---------- one person ----------
@@ -410,6 +466,33 @@ const built = (await pool([...kinds], 8, ([id, kind]) => buildMovie(id, kind)))
   .filter(({ index: m }) => m.kind === "pinned" ||
     new Date(m.date).getTime() >= (m.kind === "rerelease" ? Date.now() - 21 * DAY : cutoff));
 
+// Delays: compare with the dates we published last time (date-history.json), plus TMDB's recent changes.
+let prevHistory = {};
+try { prevHistory = JSON.parse(await readFile(process.env.PREV_HISTORY || path.join(ROOT, "_prev", "date-history.json"), "utf8")); } catch { /* first run */ }
+const upcomingIds = built.filter((b) => b.index.kind !== "rerelease").map((b) => b.index.tmdb);
+const tmdbChanges = new Map((await pool(upcomingIds, 8, async (id) => [id, await recentDateChanges(id)])).filter(Boolean));
+const history = {};
+const trackCountries = [...REGIONS];
+for (const b of built) {
+  const m = b.index;
+  if (m.kind === "rerelease") continue;
+  const prev = prevHistory[m.tmdb] || {};
+  const now = { WW: m.date };
+  const unpack = (str) => Object.fromEntries((str.match(/.{10}/g) || []).map((x) => [x.slice(0, 2), `${x.slice(2, 6)}-${x.slice(6, 8)}-${x.slice(8)}`]));
+  const all = unpack(m.dates);
+  for (const cc of trackCountries) if (all[cc]) now[cc] = all[cc];
+  const log = [...(prev.log || [])];
+  const has = (e) => log.some((x) => x[0] === e[0] && x[1] === e[1] && x[2] === e[2]);
+  for (const [cc, d] of Object.entries(now)) {
+    const was = prev.d?.[cc];
+    if (was && was !== d && !has([cc, was, d])) log.push([cc, was, d, TODAY]);
+  }
+  for (const e of tmdbChanges.get(m.tmdb) || []) if (trackCountries.includes(e[0]) && !has(e)) log.push(e);
+  log.sort((a, b) => a[3].localeCompare(b[3]));
+  history[m.tmdb] = { d: now, log: log.slice(-20), r: prev.r || {}, first: prev.first || TODAY };
+  if (log.length) m.changes = log.slice(-8);
+}
+
 // "Most anticipated" ranks per region (1 = most anticipated).
 const byId = new Map(built.map((b) => [b.index.tmdb, b.index]));
 for (const [region, ids] of Object.entries(hot)) {
@@ -417,10 +500,22 @@ for (const [region, ids] of Object.entries(hot)) {
   for (const id of ids) { const m = byId.get(id); if (m && m.kind !== "rerelease") m.hot[region] = ++rank; }
 }
 
+// Remember yesterday's ranks so the site can show ▲ / ▼ movement.
+const popOrder = built.filter((b) => b.index.kind !== "rerelease" && b.index.date >= TODAY)
+  .sort((a, b) => b.index.pop - a.index.pop).map((b) => b.index.tmdb);
+popOrder.forEach((id, i) => {
+  const h = history[id];
+  const m = byId.get(id);
+  if (!h || !m) return;
+  if (h.r.lastDay !== TODAY) { h.r.prevPop = h.r.pop; h.r.lastDay = TODAY; }
+  h.r.pop = i + 1;
+  if (h.r.prevPop) m.popWas = h.r.prevPop;
+});
+
 // Write everything into a fresh data folder.
 const DATA_DIR = path.join(ROOT, "data");
 await rm(DATA_DIR, { recursive: true, force: true });
-for (const sub of ["movies", "people", "i18n"]) await mkdir(path.join(DATA_DIR, sub), { recursive: true });
+for (const sub of ["movies", "people", "i18n", "history"]) await mkdir(path.join(DATA_DIR, sub), { recursive: true });
 
 const byLang = {};
 for (const b of built) {
@@ -444,10 +539,16 @@ await pool([...people], 10, async ([id, hue]) => {
 peopleIndex.sort((a, b) => a[1].localeCompare(b[1]));
 await writeFile(path.join(DATA_DIR, "people-index.json"), JSON.stringify(peopleIndex));
 
+await writeFile(path.join(DATA_DIR, "date-history.json"), JSON.stringify(history));
+
+console.log("Building film history…");
+const hist = await buildHistory(config.historyFrom ?? 1940, new Date().getFullYear() - 1, config.historyPages ?? 3);
+for (let i = 0; i < 12; i++) await writeFile(path.join(DATA_DIR, "history", `${String(i + 1).padStart(2, "0")}.json`), JSON.stringify(hist[i]));
+
 const movies = built.map((b) => b.index).sort((a, b) => a.date.localeCompare(b.date) || a.tmdb - b.tmdb);
 await writeFile(
   path.join(ROOT, "movies.js"),
   `// Generated by scripts/update-movies.mjs from TMDB — do not edit by hand.\n` +
-  `window.MOVIE_DATA = ${JSON.stringify({ updated: new Date().toISOString(), region: REGION, regions: REGIONS, movies })};\n`
+  `window.MOVIE_DATA = ${JSON.stringify({ updated: new Date().toISOString(), region: REGION, regions: REGIONS, providers: PROVIDERS, movies })};\n`
 );
 console.log(`\nWrote ${movies.length} movies and ${people.size} people (${calls} API calls, ${Math.round((Date.now() - started) / 1000)}s)`);

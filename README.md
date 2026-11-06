@@ -25,6 +25,8 @@ A cinematic, streaming-style website with live countdowns to upcoming movie rele
 - **Artwork** — official posters, backdrops and logos to download in full resolution.
 - **Browse** (`#/browse/…`) — Theatrical, OTT (by streaming service), Premieres (festivals), Regional cinema (by language), My Watchlist.
 - **Feed** (`#/feed`) — what's next: cinema and streaming releases, premieres, new trailers and countdown milestones; "For you" shows your waiting rooms and the people you follow.
+- **Explore** (`#/explore`): release history for any date and "On this day" (films since 1940), delayed releases tracker, anticipation rankings with daily ▲▼ movement, release clash detector, global release-date comparison, and Surprise me.
+- **Where to watch** on each movie: official streaming, rent and buy options in the visitor's country (JustWatch via TMDB).
 - **Waiting room** (`#/wait/<movie>`) — a full-screen countdown you join for a movie, with your wait progress, milestones, trailers and an invite link. Waiting rooms and follows are saved in the visitor's browser.
 
 ## Setup

@@ -30,6 +30,15 @@ jobs:
 
       - run: npm ci
 
+      # Last published date list, so the site can track delays between runs.
+      - name: Load previous release dates
+        run: |
+          mkdir -p _prev
+          if git fetch -q --depth 1 origin gh-pages 2>/dev/null; then
+            git show FETCH_HEAD:data/date-history.json > _prev/date-history.json 2>/dev/null || rm -f _prev/date-history.json
+          fi
+          ls -la _prev
+
       - name: Fetch movies from TMDB
         env:
           TMDB_TOKEN: ${{ secrets.TMDB_TOKEN }}

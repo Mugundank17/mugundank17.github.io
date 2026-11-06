@@ -346,6 +346,12 @@
         <nav class="chips home-filters" aria-label="Browse">
           ${BROWSE_TABS.map(([k, label]) => `<a href="#/browse/${k}">${label}</a>`).join("")}
           <a href="#/feed">📰 Feed</a>
+          <a href="#/rankings">🔥 Rankings</a>
+          <a href="#/clashes">⚔ Clashes</a>
+          <a href="#/delays">⏰ Delays</a>
+          <a href="#/history/today">🗓 On this day</a>
+          <a href="#/global">🌍 Compare</a>
+          <button type="button" data-surprise>🎲 Surprise me</button>
         </nav>
         ${row("row-waiting", "⏳ Your Waiting Room", waitingMovies(), card, "", `<a class="row-link" href="#/browse/watchlist">See all ›</a>`)}
         ${row("row-top", `Top 10 Most Anticipated in ${rankKey() === "WW" ? "the World" : here}`, top.slice(0, 10), rankCard, "rail-ranked")}
@@ -358,10 +364,12 @@
           card, "", `<a class="row-link" href="#/browse/ott">All OTT ›</a>`)}
         ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
         ${languageRows()}
+        <div id="onThisDay"></div>
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
         ${row("row-out", `Out Now ${inHere}`, released().slice(0, 20))}
       </div>`;
     startEmbers($(".billboard canvas"), hero.hue);
+    fillOnThisDay(routeToken);
   }
 
   // ---------- release calendar ----------
@@ -658,6 +666,15 @@
           ${tagline(m) ? `<p class="tagline">${esc(tagline(m))}</p>` : ""}
           ${countdown(m, "cd-hero")}
           ${localNote(m)}
+          ${(() => {
+            const ch = (m.changes || []).filter(([cc]) => cc === COUNTRY || cc === "WW").pop();
+            return ch ? `<p class="local-note">${parseDay(ch[2]) > parseDay(ch[1]) ? "⏰ Delayed" : "⏩ Moved earlier"}: was ${esc(shortDate(parseDay(ch[1])))} · <a href="#/delays">delays tracker</a></p>` : "";
+          })()}
+          ${(() => {
+            const c = !isOut(m) && clashFor(m);
+            const others = c ? c.list.filter((x) => x !== m) : [];
+            return others.length ? `<p class="local-note">⚔ Clashes with ${others.slice(0, 2).map((x) => `<a href="${movieHref(x)}">${esc(title(x))}</a>`).join(" &amp; ")}${others.length > 2 ? ` +${others.length - 2}` : ""} · <a href="#/clashes">all clashes</a></p>` : "";
+          })()}
           <div class="cta cta-center">
             ${ticketBtn(m)}
             ${trailerBtn(m)}
@@ -688,7 +705,11 @@
 
       ${videoSection(m)}
 
+      ${whereToWatch(m)}
+
       ${artworkSection(m)}
+
+      ${globalDatesSection(m)}
 
       <section class="about" id="about">
         <div>
@@ -1366,6 +1387,358 @@
     }
   }, 1000);
 
+
+  // =====================================================================
+  // Explore hub
+  // =====================================================================
+  const EXPLORE = [
+    ["#/history", "📜", "Release history", "See what launched on any date in film history."],
+    ["#/history/today", "🗓", "On this day", "Famous films released on this day in previous years."],
+    ["#/delays", "⏰", "Delayed releases", "Postponed films and their new dates."],
+    ["#/rankings", "🔥", "Anticipation rankings", "The most-followed upcoming releases, with daily movement."],
+    ["#/clashes", "⚔", "Release clashes", "Big films opening on the same day."],
+    ["#/global", "🌍", "Global release comparison", "Compare release dates between countries."],
+    ["surprise", "🎲", "Surprise me", "Discover a random upcoming release."],
+  ];
+  function renderExplore() {
+    document.title = "Explore — Countdown";
+    app.innerHTML = `
+      <section class="browse">
+        <header class="browse-head"><p class="kicker">Explore</p><h1 class="cal-title">Explore</h1>${scopeSwitch()}</header>
+        <div class="explore-grid">
+          ${EXPLORE.map(([href, icon, name, text]) => href === "surprise"
+            ? `<button class="xtile" type="button" data-surprise><span class="xi">${icon}</span><strong>${name}</strong><span>${text}</span></button>`
+            : `<a class="xtile" href="${href}"><span class="xi">${icon}</span><strong>${name}</strong><span>${text}</span></a>`).join("")}
+        </div>
+        <p class="muted small">Albums and games aren't covered yet — Countdown's data source (TMDB) is film-only.</p>
+      </section>`;
+  }
+  const pageHead = (kicker, heading, extra = "") => `
+    <header class="browse-head"><p class="kicker">${kicker}</p><h1 class="cal-title">${heading}</h1>${extra}</header>
+    <nav class="tabs xtabs">${EXPLORE.filter(([h]) => h !== "#/history/today").map(([href, icon, name]) => href === "surprise"
+      ? `<button type="button" data-surprise>${icon} ${name}</button>`
+      : `<a class="${location.hash.startsWith(href) ? "active" : ""}" href="${href}">${icon} ${name}</a>`).join("")}</nav>`;
+
+  // =====================================================================
+  // Release history / On this day (film archive by month)
+  // =====================================================================
+  const historyCache = new Map();
+  const loadHistoryMonth = (mm) => {
+    if (!historyCache.has(mm)) {
+      historyCache.set(mm, fetch(`data/history/${mm}.json`).then((r) => (r.ok ? r.json() : [])).catch(() => { historyCache.delete(mm); return []; }));
+    }
+    return historyCache.get(mm);
+  };
+  const MILESTONE_YEARS = new Set([5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 100]);
+  function historyCard([id, name, date, poster, lang], showDate = false) {
+    const years = new Date().getFullYear() - +date.slice(0, 4);
+    const full = byTmdb.get(id);
+    const inner = `
+      <div class="gcard-art" style="${bg(`${IMG}/w342${poster}`)}">
+        ${MILESTONE_YEARS.has(years) ? `<span class="tag tag-anniv">🎉 ${years} years</span>` : ""}
+        ${lang && lang !== "en" ? `<span class="tag tag-lang">${esc(languageName(lang))}</span>` : ""}
+      </div>
+      <strong>${esc(name)}</strong>
+      <span class="gcard-meta">${showDate ? esc(longDate(parseDay(date))) : `${date.slice(0, 4)} · ${plural(years, "year", "years")} ago`}</span>`;
+    return full ? `<a class="gcard" href="${movieHref(full)}">${inner}</a>` : `<div class="gcard">${inner}</div>`;
+  }
+  async function renderHistory(key, token) {
+    const today = new Date();
+    let md = key && /^\d{2}-\d{2}$/.test(key) ? key : `${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    const isToday = !key || key === "today" || md === `${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    const label = new Date(2000, +md.slice(0, 2) - 1, +md.slice(3)).toLocaleDateString(LANG, { month: "long", day: "numeric" });
+    document.title = `${isToday ? "On this day" : "Released on " + label} — Countdown`;
+    app.innerHTML = `<section class="browse">${pageHead(isToday ? "This day in entertainment" : "Release history", isToday ? `On this day · ${esc(label)}` : `Released on ${esc(label)}`)}
+      <div class="loading-strip"><div class="spinner"></div></div></section>`;
+    const list = (await loadHistoryMonth(md.slice(0, 2))).filter((r) => r[2].slice(5) === md);
+    if (token !== routeToken) return;
+    const d = new Date(2000, +md.slice(0, 2) - 1, +md.slice(3));
+    const shift = (n) => { const x = new Date(2000, d.getMonth(), d.getDate() + n); return `${pad(x.getMonth() + 1)}-${pad(x.getDate())}`; };
+    const byDecade = {};
+    for (const r of list) (byDecade[`${r[2].slice(0, 3)}0s`] ||= []).push(r);
+    const anniv = list.filter((r) => MILESTONE_YEARS.has(today.getFullYear() - +r[2].slice(0, 4)));
+    app.innerHTML = `
+      <section class="browse">
+        ${pageHead(isToday ? "This day in entertainment" : "Release history", isToday ? `On this day · ${esc(label)}` : `Released on ${esc(label)}`)}
+        <div class="hist-controls">
+          <a class="round" href="#/history/${shift(-1)}" aria-label="Previous day">‹</a>
+          <label class="hist-pick">📅 <input type="date" id="histDate" value="${today.getFullYear()}-${md}" aria-label="Pick a date"></label>
+          <a class="round" href="#/history/${shift(1)}" aria-label="Next day">›</a>
+          <a class="btn btn-solid btn-sm" href="#/history/today">Today</a>
+          <span class="muted small">${plural(list.length, "famous film", "famous films")} released on ${esc(label)}</span>
+        </div>
+        ${anniv.length ? `<section class="gsection"><div class="row-head"><h2 class="row-title">🎉 Anniversaries</h2></div>
+          <div class="ggrid">${anniv.map((r) => historyCard(r)).join("")}</div></section>` : ""}
+        ${Object.keys(byDecade).sort().reverse().map((dec) => `
+          <section class="gsection"><div class="row-head"><h2 class="row-title">${dec}</h2></div>
+            <div class="ggrid">${byDecade[dec].sort((a, b) => b[2].localeCompare(a[2])).map((r) => historyCard(r)).join("")}</div></section>`).join("")
+          || `<div class="cal-empty">No famous releases found for ${esc(label)}.</div>`}
+        <p class="muted small">Well-known films (by TMDB vote count) from 1940 to last year. Albums and games aren't covered — TMDB is film-only.</p>
+      </section>`;
+    $("#histDate")?.addEventListener("change", (e) => { const v = e.target.value; if (v) location.hash = `#/history/${v.slice(5)}`; });
+  }
+
+  // Home row: on this day
+  async function fillOnThisDay(token) {
+    const el = $("#onThisDay");
+    if (!el) return;
+    const t = new Date(), md = `${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+    const list = (await loadHistoryMonth(pad(t.getMonth() + 1))).filter((r) => r[2].slice(5) === md).sort((a, b) => b[5] - a[5]).slice(0, 20);
+    if (token !== routeToken || !list.length) return;
+    el.outerHTML = row("row-history", `🗓 On This Day in Film · ${esc(t.toLocaleDateString(LANG, { month: "long", day: "numeric" }))}`,
+      list, (r) => historyCard(r).replace('class="gcard"', 'class="gcard in-rail"'), "rail-posters", `<a class="row-link" href="#/history/today">See all ›</a>`);
+  }
+
+  // =====================================================================
+  // Delayed releases tracker
+  // =====================================================================
+  function renderDelays(scope = "") {
+    document.title = "Delayed releases — Countdown";
+    const mine = scope !== "all" && !isWorld();
+    const rows = [];
+    for (const m of listed()) {
+      for (const [cc, from, to, on] of m.changes || []) {
+        if (mine && cc !== COUNTRY && cc !== "WW") continue;
+        rows.push({ m, cc, from, to, on, days: Math.round((parseDay(to) - parseDay(from)) / DAY) });
+      }
+    }
+    rows.sort((a, b) => b.on.localeCompare(a.on) || Math.abs(b.days) - Math.abs(a.days));
+    const fmtShift = (d) => {
+      const a = Math.abs(d);
+      const unit = a >= 60 ? `${Math.round(a / 30)} months` : a >= 14 ? `${Math.round(a / 7)} weeks` : plural(a, "day", "days");
+      return d > 0 ? `Delayed by ${unit}` : `Moved earlier by ${unit}`;
+    };
+    app.innerHTML = `
+      <section class="browse">
+        ${pageHead("Delayed releases tracker", "Delays & date changes", scopeSwitch())}
+        <div class="chips browse-chips">
+          <a class="${scope !== "all" ? "active" : ""}" href="#/delays">${isWorld() ? "🌐 Worldwide dates" : `📍 ${esc(countryName(COUNTRY))}`}</a>
+          <a class="${scope === "all" ? "active" : ""}" href="#/delays/all">All countries</a>
+        </div>
+        <div class="delay-list">
+          ${rows.length ? rows.map(({ m, cc, from, to, on, days }) => `
+            <a class="delay ${days > 0 ? "late" : "early"}" href="${movieHref(m)}" style="${theme(m.hue)}">
+              <span class="delay-poster" style="${bg(m.poster)}"></span>
+              <span class="delay-body">
+                <strong>${esc(title(m))}</strong>
+                <span class="delay-shift">${days > 0 ? "⏰" : "⏩"} ${fmtShift(days)} ${cc === "WW" ? "worldwide" : `in ${esc(countryName(cc))}`}</span>
+                <span class="delay-dates"><s>${esc(shortDate(parseDay(from)))}</s> → <b>${esc(shortDate(parseDay(to)))}</b></span>
+                <span class="muted small">Changed ${esc(relTime(parseDay(on)))}</span>
+              </span>
+              ${countdownAt(parseDay(to), "cd-mini")}
+            </a>`).join("")
+          : `<div class="cal-empty">No date changes spotted ${mine ? `in ${esc(countryName(COUNTRY))} ` : ""}recently. <a class="row-link" href="#/delays/all">See all countries ›</a></div>`}
+        </div>
+        <p class="muted small">Countdown checks every film's dates daily and compares them with the day before, plus TMDB's change log for the last 14 days.</p>
+      </section>`;
+  }
+
+  // =====================================================================
+  // Anticipation rankings (TMDB popularity = views, watchlist adds, votes)
+  // =====================================================================
+  function renderRankings(mode = "") {
+    document.title = "Anticipation rankings — Countdown";
+    const up = upcoming().filter((m) => m.pop);
+    const genres = [...new Set(up.flatMap((m) => m.genres || []))].sort();
+    let list, note;
+    if (mode === "local") {
+      list = anticipated(); note = isWorld() ? "Worldwide most anticipated list" : `Most anticipated in ${esc(countryName(COUNTRY))}: the biggest releases there mixed with local films`;
+    } else {
+      list = up.filter((m) => !mode || m.genres?.includes(mode)).sort((a, b) => b.pop - a.pop);
+      note = "Ranked by TMDB popularity — how many people are viewing, adding to watchlists and rating each film. ▲▼ shows movement since yesterday.";
+    }
+    const globalRank = new Map(up.slice().sort((a, b) => b.pop - a.pop).map((m, i) => [m.id, i + 1]));
+    app.innerHTML = `
+      <section class="browse">
+        ${pageHead("Anticipation rankings", "Most anticipated", scopeSwitch())}
+        <div class="chips browse-chips">
+          <a class="${!mode ? "active" : ""}" href="#/rankings">🌍 Global</a>
+          <a class="${mode === "local" ? "active" : ""}" href="#/rankings/local">📍 ${esc(isWorld() ? "Worldwide list" : countryName(COUNTRY))}</a>
+          ${genres.map((g) => `<a class="${mode === g ? "active" : ""}" href="#/rankings/${encodeURIComponent(g)}">${esc(g)}</a>`).join("")}
+        </div>
+        <p class="muted small">${note}</p>
+        <ol class="rank-list">
+          ${list.slice(0, 50).map((m, i) => {
+            const was = !mode ? m.popWas : null, now = globalRank.get(m.id);
+            const move = was && now ? was - now : 0;
+            return `
+            <li><a class="rank-item" href="${movieHref(m)}" style="${theme(m.hue)}">
+              <span class="ri-n">${i + 1}</span>
+              <span class="ri-move ${move > 0 ? "up" : move < 0 ? "down" : ""}">${move > 0 ? `▲${move}` : move < 0 ? `▼${-move}` : was ? "—" : "NEW"}</span>
+              <span class="ri-poster" style="${bg(m.poster)}"></span>
+              <span class="ri-body">
+                <strong>${esc(title(m))}</strong>
+                <span class="muted small">${esc(shortDate(time(m)))}${m.lang ? ` · ${esc(languageName(m.lang))}` : ""}${m.genres?.length ? ` · ${m.genres.slice(0, 2).map(esc).join(", ")}` : ""}</span>
+              </span>
+              <span class="ri-score" title="TMDB popularity">🔥 ${Math.round(m.pop)}</span>
+              ${countdownAt(time(m), "cd-mini")}
+            </a></li>`;
+          }).join("")}
+        </ol>
+      </section>`;
+  }
+
+  // =====================================================================
+  // Release clash detector
+  // =====================================================================
+  function clashes() {
+    const byDay = new Map();
+    for (const m of upcoming()) {
+      const k = thDate(m) || (datedHere(m) ? dateStr(m) : null);
+      if (!k || isRe(m)) continue;
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(m);
+    }
+    const r = (m) => m.hot?.[rankKey()] || 999;
+    return [...byDay].filter(([, l]) => l.length > 1)
+      .map(([k, l]) => ({ k, list: l.sort((a, b) => (b.pop || 0) - (a.pop || 0)), big: l.filter((m) => r(m) <= 25 || (m.pop || 0) > 30).length }))
+      .sort((a, b) => a.k.localeCompare(b.k));
+  }
+  function renderClashes(filter = "") {
+    document.title = "Release clashes — Countdown";
+    let list = clashes();
+    if (filter === "big") list = list.filter((c) => c.big >= 2);
+    app.innerHTML = `
+      <section class="browse">
+        ${pageHead("Release clash detector", `Release clashes ${isWorld() ? "worldwide" : `in ${esc(countryName(COUNTRY))}`}`, scopeSwitch())}
+        <div class="chips browse-chips">
+          <a class="${!filter ? "active" : ""}" href="#/clashes">All clashes</a>
+          <a class="${filter === "big" ? "active" : ""}" href="#/clashes/big">💥 Big clashes only</a>
+        </div>
+        ${list.length ? list.map(({ k, list: films, big }) => `
+          <article class="clash ${big >= 2 ? "big" : ""}">
+            <header><span>${big >= 2 ? "💥 Big clash" : "⚔ Clash"}</span><strong>${esc(longDate(parseDay(k)))}</strong>
+              <span class="muted small">${plural(films.length, "film", "films")} · ${esc(relTime(parseDay(k)))}</span></header>
+            <div class="clash-row">
+              ${films.slice(0, 6).map((m, i) => `${i ? `<span class="vs">VS</span>` : ""}
+                <a class="clash-film" href="${movieHref(m)}" style="${theme(m.hue)}">
+                  <span class="clash-poster" style="${bg(m.poster)}"></span>
+                  <strong>${esc(title(m))}</strong>
+                  <span class="muted small">${m.lang ? esc(languageName(m.lang)) : ""}${m.hot?.[rankKey()] ? ` · #${m.hot[rankKey()]}` : ""}</span>
+                </a>`).join("")}
+              ${films.length > 6 ? `<span class="muted small">+${films.length - 6} more</span>` : ""}
+            </div>
+          </article>`).join("") : `<div class="cal-empty">No release clashes on our list.</div>`}
+      </section>`;
+  }
+  const clashFor = (m) => clashes().find((c) => c.list.includes(m));
+
+  // =====================================================================
+  // Global release comparison
+  // =====================================================================
+  const CMP_KEY = "movie-countdown:compare";
+  function renderGlobal() {
+    document.title = "Global release comparison — Countdown";
+    let picked = readJSON(CMP_KEY, null);
+    if (!picked) picked = [...new Set([HOME_COUNTRY, "US", "GB", "JP", "KR", "FR", "DE", "BR"])].slice(0, 6);
+    const choices = [...new Set([HOME_COUNTRY, ...REGIONS])];
+    const films = anticipated("WW").slice(0, 40);
+    app.innerHTML = `
+      <section class="browse">
+        ${pageHead("Global release comparison", "Release dates around the world")}
+        <div class="chips browse-chips wrap">
+          ${choices.map((c) => `<button type="button" class="${picked.includes(c) ? "active" : ""}" data-cmp="${c}">${esc(countryName(c))}</button>`).join("")}
+        </div>
+        <div class="cmp-wrap"><table class="cmp">
+          <thead><tr><th>Film</th>${picked.map((c) => `<th>${esc(countryName(c))}</th>`).join("")}</tr></thead>
+          <tbody>${films.map((m) => {
+            const ds = picked.map((c) => m.dates?.[c] || null);
+            const known = ds.filter(Boolean).sort();
+            return `<tr><td><a href="${movieHref(m)}">${esc(title(m))}</a></td>${ds.map((d) => {
+              if (!d) return `<td class="na">—</td>`;
+              const diff = Math.round((parseDay(d) - parseDay(known[0])) / DAY);
+              return `<td class="${d === known[0] && known.length > 1 && known[known.length - 1] !== d ? "first" : ""}">${esc(fmt(parseDay(d), { month: "short", day: "numeric" }))}${diff ? `<small>+${diff}d</small>` : ""}</td>`;
+            }).join("")}</tr>`;
+          }).join("")}</tbody>
+        </table></div>
+        <p class="muted small">Green = releases there first. +Nd = days after the earliest country. Tap countries above to compare.</p>
+      </section>`;
+  }
+
+  // Movie page: release dates in every country
+  function globalDatesSection(m) {
+    if (!m.dates || Object.keys(m.dates).length < 2) return "";
+    const entries = Object.entries(m.dates).sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]));
+    const mine = m.dates[HOME_COUNTRY];
+    const first = entries[0][1];
+    const shown = entries.slice(0, 24);
+    return `
+      <section class="globaldates" id="world">
+        <div class="art-head"><p class="kicker">Release dates around the world</p><a class="row-link" href="#/global">Compare countries ›</a></div>
+        <p class="muted small">${plural(entries.length, "country", "countries")} · first in ${esc(countryName(entries[0][0]))} on ${esc(shortDate(parseDay(first)))}${mine ? ` · ${esc(countryName(HOME_COUNTRY))}: ${esc(shortDate(parseDay(mine)))}` : ""}</p>
+        <ul class="gd-list">${shown.map(([cc, d]) => {
+          const rel = mine ? Math.round((parseDay(d) - parseDay(mine)) / DAY) : null;
+          return `<li class="${cc === HOME_COUNTRY ? "me" : ""}"><span>${esc(countryName(cc))}</span><b>${esc(shortDate(parseDay(d)))}</b>
+            <small>${cc === HOME_COUNTRY ? "you" : rel === null ? "" : rel === 0 ? "same day" : rel < 0 ? `${-rel}d earlier` : `${rel}d later`}</small></li>`;
+        }).join("")}</ul>
+        ${entries.length > shown.length ? `<p class="muted small">+${entries.length - shown.length} more countries</p>` : ""}
+      </section>`;
+  }
+
+  // Movie page: where to watch (legitimate services, via TMDB / JustWatch)
+  function whereToWatch(m) {
+    if (!m.tmdb || !m._loaded) return "";
+    const cc = isWorld() ? HOME_COUNTRY : COUNTRY;
+    const w = m.watch?.[cc];
+    const P = DATA.providers || {};
+    const link = `https://www.themoviedb.org/movie/${m.tmdb}/watch?locale=${cc}`;
+    const group = (ids, label) => ids?.length ? `
+      <div class="ww-group"><p>${label}</p><div class="ww-logos">${ids.map((id) => P[id] ? `
+        <a class="ww-p" href="${esc(link)}" target="_blank" rel="noopener" title="${esc(P[id][0])}">
+          <img src="${IMG}/w92${esc(P[id][1])}" alt="" loading="lazy"><span>${esc(P[id][0])}</span></a>` : "").join("")}</div></div>` : "";
+    const body = w ? group(w.f, "Stream") + group(w.a, "Free with ads") + group(w.r, "Rent") + group(w.b, "Buy") : "";
+    return `
+      <section class="watchwhere" id="where">
+        <div class="art-head"><p class="kicker">Where to watch · ${esc(countryName(cc))}</p></div>
+        ${body || `<p class="ww-none">${isOut(m) ? `Not available to stream or buy in ${esc(countryName(cc))} yet.` : `Not streaming yet — ${thDate(m) ? `in cinemas from ${esc(shortDate(parseDay(thDate(m))))}` : `releases ${esc(shortDate(time(m)))}`}.`}
+          ${!isOut(m) ? `<button class="btn btn-outline btn-sm" type="button" data-tickets="${esc(m.id)}">🎟 Get Tickets</button>` : ""}</p>`}
+        <p class="muted small">Official services only. Availability by <a href="https://www.justwatch.com" target="_blank" rel="noopener">JustWatch</a> via TMDB.</p>
+      </section>`;
+  }
+
+  // =====================================================================
+  // Surprise me
+  // =====================================================================
+  const surpriseDlg = $("#surprise");
+  let surpriseTimer = null;
+  function surprise() {
+    const pool_ = upcoming().filter((m) => m.poster);
+    if (!pool_.length) return;
+    if (!surpriseDlg.open) surpriseDlg.showModal();
+    const box = $(".sp-box", surpriseDlg);
+    let n = 0;
+    clearInterval(surpriseTimer);
+    const pickOne = () => pool_[Math.floor(Math.random() * pool_.length)];
+    surpriseTimer = setInterval(() => {
+      const m = pickOne();
+      box.innerHTML = `<div class="sp-spin" style="${bg(m.poster)}"></div>`;
+      if (++n > 12) {
+        clearInterval(surpriseTimer);
+        const pick = pickOne();
+        box.innerHTML = `
+          <div class="sp-result" style="${theme(pick.hue)}">
+            <div class="sp-poster" style="${bg(pick.poster)}"></div>
+            <div class="sp-info">
+              <p class="kicker">🎲 Your surprise</p>
+              <h2>${esc(title(pick))}</h2>
+              ${origTitle(pick) ? `<p class="muted">${esc(origTitle(pick))}</p>` : ""}
+              <p class="muted small">${esc(longDate(time(pick)))}${pick.lang ? ` · ${esc(languageName(pick.lang))}` : ""}${pick.genres?.length ? ` · ${pick.genres.slice(0, 2).map(esc).join(", ")}` : ""}</p>
+              <p class="sp-blurb">${esc(synopsis(pick) || "")}</p>
+              ${countdown(pick, "cd-small")}
+              <div class="cta">
+                <a class="btn btn-solid btn-sm" href="${movieHref(pick)}" data-close-surprise>ⓘ Open</a>
+                <button class="btn btn-outline btn-sm" type="button" data-surprise>🎲 Spin again</button>
+                ${waitBtn(pick, "btn btn-ghost btn-sm")}
+              </div>
+            </div>
+          </div>`;
+      }
+    }, 90);
+  }
+  surpriseDlg.addEventListener("click", (e) => {
+    if (e.target === surpriseDlg || e.target.closest(".close") || e.target.closest("[data-close-surprise]") || e.target.closest("[data-wait]")) surpriseDlg.close();
+  });
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1451,7 +1824,8 @@
     const token = ++routeToken;
     const h = decodeURIComponent(location.hash);
     let m;
-    const sec = h.startsWith("#/browse/watchlist") ? "watchlist" : section(h);
+    const sec = h.startsWith("#/browse/watchlist") ? "watchlist"
+      : ["explore", "history", "delays", "rankings", "clashes", "global"].includes(section(h)) ? "explore" : section(h);
     $$(".nav-links a, .tabbar a").forEach((a) => a.classList.toggle("active", a.dataset.section === sec ||
       (a.dataset.section === "browse" && sec === "watchlist" && a.closest(".nav-links"))));
 
@@ -1460,6 +1834,12 @@
       return movie ? renderMovie(movie, token) : renderHome();
     }
     clearInterval(slideTimer);
+    if (h === "#/explore") return renderExplore();
+    if ((m = h.match(/^#\/history(?:\/([\w-]+))?$/))) return renderHistory(m[1], token);
+    if ((m = h.match(/^#\/delays(?:\/(all))?$/))) return renderDelays(m[1] || "");
+    if ((m = h.match(/^#\/rankings(?:\/(.+))?$/))) return renderRankings(m[1] || "");
+    if ((m = h.match(/^#\/clashes(?:\/(big))?$/))) return renderClashes(m[1] || "");
+    if (h === "#/global") return renderGlobal();
     if ((m = h.match(/^#\/browse(?:\/(\w+))?(?:\/(.+))?$/))) return renderBrowse(m[1], m[2] || "");
     if ((m = h.match(/^#\/feed(?:\/(\w+))?$/))) return renderFeed(m[1] || "all");
     if ((m = h.match(/^#\/wait\/(.+)$/))) {
@@ -1565,6 +1945,16 @@
         fl.outerHTML = followBtn(p);
       });
       return;
+    }
+
+    if (t.closest("[data-surprise]")) { e.preventDefault(); return surprise(); }
+    const cmp = t.closest("[data-cmp]");
+    if (cmp) {
+      let picked = readJSON(CMP_KEY, null) || [...new Set([HOME_COUNTRY, "US", "GB", "JP", "KR", "FR", "DE", "BR"])].slice(0, 6);
+      const c = cmp.dataset.cmp;
+      picked = picked.includes(c) ? picked.filter((x) => x !== c) : [...picked, c].slice(-8);
+      writeJSON(CMP_KEY, picked);
+      return renderGlobal();
     }
 
     const ct = t.closest("[data-caltype]");
