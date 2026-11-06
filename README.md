@@ -5,8 +5,18 @@ A cinematic, streaming-style website with live countdowns to upcoming movie rele
 ## How it works
 
 - `watchlist.json` — movies you always want on the site (title + year, or a TMDB id), the release region, and how many popular upcoming releases to add automatically.
-- `scripts/update-movies.mjs` — fetches everything from TMDB, picks each movie's background colours from its backdrop, and writes `movies.js`.
+- `scripts/update-movies.mjs` — fetches everything from TMDB and writes:
+  - `movies.js` — every movie, with release dates and age ratings for each country, artwork, cast, official trailers/teasers and colours sampled from the backdrop
+  - `data/people/<id>.json` — a profile for each cast member and director (bio, photos, filmography)
+  - `data/i18n/<lang>.json` — translated titles, taglines and overviews
+- Re-releases: classic films with an upcoming cinema date in any country listed in `reReleaseRegions` are added automatically.
 - `.github/workflows/update-movies.yml` — runs the script every day (and on every push), commits the new `movies.js`, and deploys the site to GitHub Pages.
+
+## On the site
+
+- Visitors see release dates, age ratings and countdowns for **their own country** (detected from their time zone, changeable with the 📍 picker), in **their own language** where TMDB has a translation.
+- Every cast member and director has a profile page (`#/person/<id>`) with their bio, photos, upcoming films, re-releases and full filmography.
+- Trailers and teasers play right on the movie page.
 
 ## Setup
 

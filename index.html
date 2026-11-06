@@ -17,15 +17,20 @@
     <a class="brand" href="#/">MOVIE<span>COUNTDOWN</span></a>
     <div class="nav-links">
       <a href="#/" data-scroll="row-upcoming">Coming Soon</a>
+      <a href="#/" data-scroll="row-rereleases">Re-releases</a>
       <a href="#/" data-scroll="row-out">Out Now</a>
     </div>
-    <button class="btn btn-solid btn-sm" id="addBtn" type="button">+ Add</button>
+    <label class="country" title="Release dates for">
+      <span aria-hidden="true">📍</span>
+      <select id="country" aria-label="Show release dates for country"></select>
+    </label>
+    <button class="btn btn-solid btn-sm" id="addBtn" type="button" aria-label="Add a countdown">+<span class="add-text"> Add</span></button>
   </nav>
 
   <main id="app"></main>
 
   <footer class="footer">
-    <p>Release dates change often — always check with your local cinema.</p>
+    <p>Release dates and ratings follow the country you pick at the top. Dates change often — always check with your local cinema.</p>
     <p class="muted">Movie data, images and trailer links from <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>. This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
     <p class="muted" id="updated"></p>
   </footer>

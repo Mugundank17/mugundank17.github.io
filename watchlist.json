@@ -4,13 +4,48 @@
   "autoUpcoming": 12,
   "keepReleasedDays": 60,
   "movies": [
-    { "title": "Avengers: Doomsday", "year": 2026 },
-    { "title": "Dune: Part Three", "year": 2026 },
-    { "title": "Jumanji 3", "year": 2026 },
-    { "title": "Shrek 5", "year": 2027 },
-    { "title": "The Batman Part II", "year": 2027 },
-    { "title": "Avengers: Secret Wars", "year": 2027 },
-    { "title": "Spider-Man: Brand New Day", "year": 2026 },
-    { "title": "The Odyssey", "year": 2026 }
+    {
+      "title": "Avengers: Doomsday",
+      "year": 2026
+    },
+    {
+      "title": "Dune: Part Three",
+      "year": 2026
+    },
+    {
+      "title": "Jumanji 3",
+      "year": 2026
+    },
+    {
+      "title": "Shrek 5",
+      "year": 2027
+    },
+    {
+      "title": "The Batman Part II",
+      "year": 2027
+    },
+    {
+      "title": "Avengers: Secret Wars",
+      "year": 2027
+    },
+    {
+      "title": "Spider-Man: Brand New Day",
+      "year": 2026
+    },
+    {
+      "title": "The Odyssey",
+      "year": 2026
+    }
+  ],
+  "reReleases": 10,
+  "reReleaseRegions": [
+    "US",
+    "IN",
+    "GB",
+    "CA",
+    "AU",
+    "FR",
+    "DE",
+    "JP"
   ]
 }
