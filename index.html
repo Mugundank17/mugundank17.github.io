@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Movie Countdown</title>
+  <meta name="description" content="Live countdowns to the movie releases you can't wait for.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <h1 class="logo"><span aria-hidden="true">🎬</span> Movie Countdown</h1>
+      <button class="btn btn-primary" id="addBtn" type="button">+ Add movie</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero" id="hero" aria-live="polite"></section>
+
+    <section class="toolbar" aria-label="Filter and sort">
+      <input type="search" id="search" placeholder="Search movies…" aria-label="Search movies">
+      <div class="seg" role="group" aria-label="Show">
+        <button type="button" data-filter="upcoming" class="active">Upcoming</button>
+        <button type="button" data-filter="released">Released</button>
+        <button type="button" data-filter="all">All</button>
+      </div>
+    </section>
+
+    <section class="grid" id="grid" aria-label="Movies"></section>
+    <p class="empty" id="empty" hidden>No movies here yet. Add one with the <strong>+ Add movie</strong> button.</p>
+
+    <p class="note">Release dates shift often — tap ✎ on any card to update it. Your list is saved in this browser.</p>
+  </main>
+
+  <dialog id="dialog">
+    <form method="dialog" id="form">
+      <h2 id="dialogTitle">Add a movie</h2>
+      <label>Title
+        <input name="title" required maxlength="80" autocomplete="off">
+      </label>
+      <div class="row">
+        <label>Release date
+          <input name="date" type="date" required>
+        </label>
+        <label>Time (optional)
+          <input name="time" type="time">
+        </label>
+      </div>
+      <label>Poster image URL (optional)
+        <input name="poster" type="url" placeholder="https://…">
+      </label>
+      <label>Note (optional)
+        <input name="note" maxlength="60" placeholder="e.g. Theaters, IMAX, Netflix">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" id="cancelBtn">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <footer class="site-footer wrap">
+    <button type="button" class="link" id="resetBtn">Restore default list</button>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
