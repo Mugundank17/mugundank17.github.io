@@ -37,6 +37,14 @@ Anime comes live from [AniList](https://anilist.co)'s public GraphQL API (`https
 - `providers/anilist.js` — the AniList adapter: GraphQL queries, request spacing for AniList's rate limit (~30/min), de-duplication, 429 retry, caching (schedule 10 min, lists 3 h, search 30 min, details 1 h, stale fallback when offline), pagination, and mapping AniList `Media` → `Release`.
 - Pages (`#/anime/…`): airing schedule by day with episode countdowns, seasonal anime (any season, sortable), upcoming anime, search, and detail pages with posters, studios, genres, description, trailer, official streaming links, related titles and recommendations. Anime also appears in the main search and on the home page ("airing in the next 24 hours").
 
+## TV, games and music (built daily by `scripts/build-extras.mjs`)
+
+Each section is a separate provider module in `scripts/providers/`; if one fails, the others still build and the failed one keeps yesterday's data.
+
+- **TV** — `tmdb-tv.mjs` (TMDB: discovery, posters, metadata, where to watch) + `tvmaze.mjs` (TVmaze: exact episode air times). In the browser, `providers/tvmaze.js` loads episodes, seasons, streaming/broadcast schedules (India, USA, UK, global) and search live. TVmaze data is CC BY-SA 4.0 and attributed on every TV page.
+- **Games** — `steam.mjs` (primary, PC: Valve's public store endpoints only — Coming Soon lists + appdetails per storefront; no SteamDB) and `igdb.mjs` (PlayStation, Xbox, Nintendo, regional/platform release dates, DLC, franchises). Merged in `games.mjs` by Steam app id, or exact title + year when IGDB lists PC.
+  - **IGDB needs Twitch credentials**: create an application at https://dev.twitch.tv/console/apps, then add repository secrets `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`. The token is requested server-side in the Action, cached for its `expires_in`, renewed automatically and never published. Without the secrets the games section is Steam-only (PC).
+
 ## Android app
 
 Countdown is an installable web app (PWA). On Android, open the site in Chrome and tap **Install app** (or ⋮ → *Add to Home screen* → *Install*). It installs with its own icon, opens full-screen, and works offline with the last-loaded data. Updates arrive automatically: the app loads the latest published version whenever it's opened online.

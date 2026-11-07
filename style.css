@@ -1184,3 +1184,14 @@ a.person:hover .btn-outline { border-color: #fff; background: rgba(255,255,255,.
   .ep-side { grid-column: 2; }
   .episodes { padding: 46px 16px 0; }
 }
+
+/* ---------- Games ---------- */
+.t-game { --tc: #8b5cf6; }
+.game-art { background-size: cover; background-position: center; }
+.pill-dim { background: rgba(255,255,255,.06); color: #bbb; }
+.shot { flex: 0 0 clamp(240px, 26vw, 360px); aspect-ratio: 16 / 9; border-radius: 10px; background-size: cover; background-position: center; background-color: #161616; scroll-snap-align: start; }
+.video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.gvid { margin: 0; }
+.gvid video { width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; background: #000; }
+.gvid figcaption { font-size: 13px; color: #ccc; margin-top: 6px; }
+.globaldates .cmp-wrap { margin-top: 12px; }

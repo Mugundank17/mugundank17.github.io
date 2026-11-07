@@ -353,6 +353,7 @@
         <nav class="chips home-filters" aria-label="Browse">
           ${BROWSE_TABS.map(([k, label]) => `<a href="#/browse/${k}">${label}</a>`).join("")}
           <a href="#/tv">📺 TV</a>
+          <a href="#/games">🎮 Games</a>
           <a href="#/anime">🎌 Anime</a>
           <a href="#/feed">📰 Feed</a>
           <a href="#/rankings">🔥 Rankings</a>
@@ -376,6 +377,7 @@
         ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
         ${languageRows()}
         <div id="tvSoon"></div>
+        <div id="gamesSoon"></div>
         <div id="animeAiring"></div>
         <div id="onThisDay"></div>
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
@@ -385,6 +387,7 @@
     fillOnThisDay(routeToken);
     fillAnimeRow(routeToken);
     fillTVRow(routeToken);
+    fillGamesRow(routeToken);
   }
 
   // ---------- release calendar ----------
@@ -2342,6 +2345,181 @@
     el.outerHTML = row("row-tv", "📺 New Episodes This Week", list, tvRailCard, "rail-posters", `<a class="row-link" href="#/tv">All TV ›</a>`);
   }
 
+
+  // =====================================================================
+  // Games — Steam (PC) + IGDB (consoles, cross-platform), built daily into data/games/
+  // =====================================================================
+  let gamesP = null;
+  const loadGames = () => (gamesP ||= fetch("data/games/index.json").then((r) => (r.ok ? r.json() : { items: [] })).catch(() => { gamesP = null; return { items: [] }; }));
+  const gameDetailCache = new Map();
+  const loadGame = (id) => {
+    if (!gameDetailCache.has(id)) gameDetailCache.set(id, fetch(`data/games/${id}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+    return gameDetailCache.get(id);
+  };
+  const gameHref = (g) => `#/games/${encodeURIComponent(g.id)}`;
+  const FAMILIES = [["PC", "🖥 PC"], ["PlayStation", "🎮 PlayStation"], ["Xbox", "🟢 Xbox"], ["Nintendo", "🔴 Nintendo"]];
+  const GAME_ATTR = `<p class="muted small attribution">PC game data and images from <a href="https://store.steampowered.com" target="_blank" rel="noopener">Steam</a>
+    (images © their owners, linked to the official store pages). Console and cross-platform data from <a href="https://www.igdb.com" target="_blank" rel="noopener">IGDB.com</a>.</p>`;
+  const coverBg = (g) => {
+    const urls = [g.cover, g.coverFallback, g.header].filter(Boolean);
+    return urls.length ? `background-image:${urls.map((u) => `url(&quot;${esc(encodeURI(u))}&quot;)`).join(",")}` : "";
+  };
+
+  // A release date honours its precision: only day-exact dates get a ticking countdown.
+  const PREC = { day: "", month: "Month only", quarter: "Quarter", year: "Year only" };
+  function releaseLabel(rd) {
+    if (!rd) return "TBA";
+    if (!rd.date) return rd.label || "TBA";
+    const t = parseDay(rd.date);
+    if (rd.precision === "day") return shortDate(t);
+    if (rd.precision === "month") return fmt(t, { month: "long", year: "numeric" });
+    return rd.label || rd.date.slice(0, 4);
+  }
+  const releaseCountdown = (rd, cls = "cd-mini") => (rd?.date && rd.precision === "day" ? countdownAt(parseDay(rd.date), cls, "Out now")
+    : `<span class="date-only">${rd?.date ? "Estimated" : "Date not announced"}</span>`);
+
+  function gameCard(g) {
+    const p = g.primary;
+    const price = g.prices?.[COUNTRY] || g.prices?.US;
+    return `
+      <a class="gcard" href="${gameHref(g)}">
+        <div class="gcard-art game-art" style="${coverBg(g)}">
+          <span class="tag tag-type t-game">${g.type === "dlc" ? "🧩 DLC" : "🎮 " + esc((g.families || []).slice(0, 2).join(" · ") || "Game")}</span>
+          ${price ? `<span class="tag tag-score">${esc(price)}</span>` : ""}
+        </div>
+        <strong>${esc(g.title)}</strong>
+        <span class="gcard-meta">${esc(releaseLabel(p))}${p?.platform && g.dateCount > 1 ? ` · ${esc(p.platform)}` : ""}${g.developers?.[0] ? ` · ${esc(g.developers[0])}` : ""}</span>
+        ${releaseCountdown(p)}
+      </a>`;
+  }
+
+  const GAME_TABS = [["upcoming", "🎮 Upcoming"], ["dlc", "🧩 DLC & expansions"], ["search", "🔍 Search"]];
+  async function renderGames(tab = "upcoming", arg = "") {
+    const token = routeToken;
+    if (!GAME_TABS.some(([k]) => k === tab)) return renderGame(decodeURIComponent(tab), token);
+    document.title = "Games — Countdown";
+    const fam = tab === "upcoming" ? decodeURIComponent(arg || "") : "";
+    const q = tab === "search" ? decodeURIComponent(arg || "") : "";
+    app.innerHTML = `<section class="browse">
+      <header class="browse-head"><p class="kicker">🎮 Games</p><h1 class="cal-title">${tab === "dlc" ? "DLC & expansions" : tab === "search" ? "Search games" : "Upcoming games"}</h1></header>
+      <nav class="tabs">${GAME_TABS.map(([k, l]) => `<a class="${k === tab ? "active" : ""}" href="#/games/${k}">${l}</a>`).join("")}</nav>
+      ${tab === "upcoming" ? `<div class="chips browse-chips"><a class="${!fam ? "active" : ""}" href="#/games/upcoming">All platforms</a>
+        ${FAMILIES.map(([k, l]) => `<a class="${fam === k ? "active" : ""}" href="#/games/upcoming/${k}">${l}</a>`).join("")}</div>` : ""}
+      ${tab === "search" ? `<form class="anime-search" id="gameSearchForm"><input id="gameQ" type="search" value="${esc(q)}" placeholder="Search games, developers, publishers…" autocomplete="off" aria-label="Search games">
+        <button class="btn btn-solid" type="submit">Search</button></form>` : ""}
+      <div id="gameList"><div class="loading-strip"><div class="spinner"></div></div></div>
+      ${GAME_ATTR}</section>`;
+    $("#gameSearchForm")?.addEventListener("submit", (e) => { e.preventDefault(); const v = $("#gameQ").value.trim(); location.hash = `#/games/search/${encodeURIComponent(v)}`; });
+    const idx = await loadGames();
+    if (token !== routeToken) return;
+    const t0 = dayKey(Date.now());
+    const sortKey = (g) => (g.primary?.date ? (g.primary.precision === "day" ? "0" : "1") + g.primary.date : "2");
+    let list = idx.items;
+    if (tab === "upcoming") list = list.filter((g) => g.type !== "dlc" && (!fam || g.families?.includes(fam)));
+    if (tab === "dlc") list = list.filter((g) => g.type === "dlc");
+    if (tab === "search") {
+      const nq = norm(q);
+      list = nq ? list.filter((g) => norm([g.title, ...(g.developers || []), ...(g.publishers || []), ...(g.genres || [])].join(" ")).includes(nq)) : [];
+    }
+    list = list.slice().sort((a, b) => (b.hypes || 0) - (a.hypes || 0) || (a.rank || 999) - (b.rank || 999) || sortKey(a).localeCompare(sortKey(b)))
+      .sort((a, b) => ((a.primary?.date || "9999") < t0) - ((b.primary?.date || "9999") < t0));
+    if (!idx.items.length) { $("#gameList").innerHTML = `<div class="cal-empty">Game data hasn't been built yet — it arrives with the next daily update.</div>`; return; }
+    if (tab === "search" && !q) { $("#gameList").innerHTML = `<div class="cal-empty">Search upcoming games by title, developer or publisher.</div>`; return; }
+    const PER = 30;
+    mountPaged("gameList", async (page) => ({ items: list.slice((page - 1) * PER, page * PER), page: { current: page, hasNext: page * PER < list.length } }),
+      gameCard, { empty: fam && !idx.items.some((g) => g.families?.includes(fam)) ? `No ${esc(fam)} games yet — console games come from IGDB, which needs Twitch credentials (see README).` : "No games found.",
+        wrap: (h) => `<div class="ggrid">${h}</div>` });
+  }
+
+  async function renderGame(id, token) {
+    app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
+    const g = await loadGame(id);
+    if (token !== routeToken) return;
+    if (!g) return renderMessage("Game not found", "This game isn't on our list.");
+    document.title = `${g.title} — Countdown`;
+    currentGame = g;
+    const hue = [265, 220];
+    const p = g.primary;
+    const cc = ["IN", "US", "GB"].includes(COUNTRY) ? COUNTRY : "US";
+    const store = g.stores?.[cc];
+    app.innerHTML = `
+      <header class="cine hero" style="${theme(hue)}">
+        ${fireLayers(g.banner || g.background || g.header, orb)}
+        <div class="hero-body">
+          <p class="byline re">${g.type === "dlc" ? "🧩 DLC" : "🎮 Game"} · ${esc((g.platforms || []).slice(0, 6).join(" · "))}</p>
+          ${g.developers?.length ? `<p class="byline">By <strong>${g.developers.map(esc).join(" &amp; ")}</strong>${g.publishers?.length && g.publishers.join() !== g.developers.join() ? ` · published by <strong>${g.publishers.map(esc).join(", ")}</strong>` : ""}</p>` : ""}
+          <h1 class="mega" style="--len:${longestWord(g.title)}">${esc(g.title)}</h1>
+          ${g.parent ? `<p class="tagline">Expansion for ${esc(g.parent.name)}</p>` : ""}
+          <p class="tagline">${p?.date ? `${p.confirmed ? "Releases" : "Expected"} ${esc(releaseLabel(p))}${p.platform && g.releaseDates.length > 1 ? ` on ${esc(p.platform)}` : ""}${p.region && p.source !== "steam" ? ` (${esc(p.region)})` : ""}` : esc(p?.label || "Release date not announced")}</p>
+          ${p?.date && p.precision === "day" ? countdownAt(parseDay(p.date), "cd-hero", "Out now") : `<p class="local-note">${p?.date ? `${esc(PREC[p.precision] || "Estimated")} — no exact date yet, so no countdown.` : "No release date announced yet."}</p>`}
+          <div class="cta cta-center">
+            ${g.links?.steam ? `<a class="btn btn-solid" href="${esc(g.links.steam)}" target="_blank" rel="noopener">🖥 View on Steam${store?.price ? ` · ${esc(store.price)}` : ""}</a>` : ""}
+            ${g.videos?.length || g.trailers?.length ? `<a class="play" href="#gvideos" data-scroll="gvideos"><span>▶</span> Trailers</a>` : ""}
+            ${g.links?.igdb ? `<a class="btn btn-outline" href="${esc(g.links.igdb)}" target="_blank" rel="noopener">IGDB ↗</a>` : ""}
+          </div>
+        </div>
+      </header>
+
+      <section class="about">
+        <div><p class="kicker">About the game</p>
+          <div class="about-text anime-desc">${(g.about || g.summary || "No description yet.").split(/\n+/).slice(0, 12).map((t) => `<p>${esc(t)}</p>`).join("")}</div>
+          ${g.genres?.length ? `<div class="chips anime-tags">${g.genres.map((x) => `<span class="pill">${esc(x)}</span>`).join("")}${(g.categories || []).slice(0, 6).map((x) => `<span class="pill pill-dim">${esc(x)}</span>`).join("")}</div>` : ""}
+        </div>
+        <dl class="facts">
+          ${[["Developer", g.developers?.join(", ")], ["Publisher", g.publishers?.join(", ")], ["Platforms", g.platforms?.join(", ")],
+            ["PC systems", g.pcOS?.join(", ")], ["Franchise", g.franchises?.join(", ")], ["Price", Object.entries(g.stores || {}).map(([c, x]) => x.price ? `${c} ${x.price}` : "").filter(Boolean).join(" · ")]]
+            .filter(([, v]) => v).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}
+        </dl>
+      </section>
+
+      <section class="globaldates">
+        <div class="art-head"><p class="kicker">Release dates by platform &amp; region</p></div>
+        <div class="cmp-wrap"><table class="cmp">
+          <thead><tr><th>Platform</th><th>Region / store</th><th>Date</th><th>Status</th><th>Source</th></tr></thead>
+          <tbody>${g.releaseDates.map((rd) => `<tr><td>${esc(rd.platform || "—")}</td><td>${esc(rd.region || "Not specified")}</td>
+            <td>${esc(releaseLabel(rd))}${rd.precision && rd.precision !== "day" ? ` <span class="pill pill-dim">${esc(PREC[rd.precision])}</span>` : ""}</td>
+            <td>${esc(rd.status || "")}</td><td>${rd.source === "steam" ? "Steam" : "IGDB"}</td></tr>`).join("")}</tbody>
+        </table></div>
+        ${Object.keys(g.stores || {}).length ? `<p class="muted small">Steam storefronts: ${Object.entries(g.stores).map(([c, x]) => `${esc(countryName(c))} — ${esc(x.release?.label || "")}${x.price ? ` · ${esc(x.price)}` : ""}`).join(" · ")}</p>` : ""}
+      </section>
+
+      ${g.screenshots?.length ? `<div class="rows anime-rows"><section class="row"><div class="row-head"><h2 class="row-title">Screenshots</h2></div>
+        ${rail(g.screenshots, (sh) => `<a class="shot" href="${esc(sh.full)}" target="_blank" rel="noopener" style="${bg(sh.thumb)}" aria-label="Open screenshot"></a>`)}</section></div>` : ""}
+
+      ${g.videos?.length || g.trailers?.length ? `<section class="watch" id="gvideos"><p class="kicker">Trailers</p>
+        ${g.videos?.length ? `<div class="video-grid">${g.videos.map((v) => `<figure class="gvid"><video controls playsinline preload="none" poster="${esc(v.thumb)}">
+          ${v.webm ? `<source src="${esc(v.webm)}" type="video/webm">` : ""}${v.mp4 ? `<source src="${esc(v.mp4)}" type="video/mp4">` : ""}${v.hls ? `<source src="${esc(v.hls)}" type="application/vnd.apple.mpegurl">` : ""}</video>
+          <figcaption>${esc(v.name)}${g.links?.steam ? ` · <a href="${esc(g.links.steam)}" target="_blank" rel="noopener">Watch on Steam ↗</a>` : ""}</figcaption></figure>`).join("")}</div>` : ""}
+        ${g.trailers?.length ? `<div class="cta">${g.trailers.map((v, i) => `<button class="btn btn-ghost btn-sm" type="button" data-game-trailer="${i}">▶ ${esc(v.name)}</button>`).join("")}</div>` : ""}
+      </section>` : ""}
+
+      ${g.dlc?.length ? `<section class="globaldates"><div class="art-head"><p class="kicker">DLC &amp; expansions${g.dlcCount > g.dlc.length ? ` · ${g.dlcCount} on Steam` : ""}</p></div>
+        <div class="delay-list">${g.dlc.map((d) => `
+          <${d.url ? `a href="${esc(d.url)}" target="_blank" rel="noopener"` : "div"} class="delay">
+            <span class="delay-poster" style="${bg(d.cover || g.header)}"></span>
+            <span class="delay-body"><strong>${esc(d.name)}</strong><span class="muted small">${esc(d.kind)} · ${esc(d.date ? releaseLabel({ date: d.date, precision: d.precision || "day", label: d.label }) : d.label || "TBA")}</span></span>
+          </${d.url ? "a" : "div"}>`).join("")}</div></section>` : ""}
+
+      ${g.similar?.length ? `<div class="rows anime-rows"><section class="row"><div class="row-head"><h2 class="row-title">Related &amp; similar</h2></div>
+        ${rail(g.similar, (x) => `<div class="gcard in-rail"><div class="gcard-art" style="${bg(x.cover)}"></div><strong>${esc(x.name)}</strong></div>`, "rail-posters")}</section></div>` : ""}
+      ${GAME_ATTR}`;
+    startEmbers($(".hero canvas"), hue, 0.6);
+  }
+  let currentGame = null;
+
+  async function fillGamesRow(token) {
+    const el = $("#gamesSoon");
+    if (!el) return;
+    const idx = await loadGames();
+    if (token !== routeToken) return;
+    const t0 = dayKey(Date.now());
+    const list = idx.items.filter((g) => g.type !== "dlc" && g.primary?.date && g.primary.precision === "day" && g.primary.date >= t0)
+      .sort((a, b) => (b.hypes || 0) - (a.hypes || 0) || (a.rank || 999) - (b.rank || 999)).slice(0, 20)
+      .sort((a, b) => a.primary.date.localeCompare(b.primary.date));
+    if (!list.length) return el.remove();
+    el.outerHTML = row("row-games", "🎮 Upcoming Games", list, (g) => gameCard(g).replace('class="gcard"', 'class="gcard in-rail"'), "rail-posters", `<a class="row-link" href="#/games">All games ›</a>`);
+  }
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -2437,6 +2615,7 @@
       return movie ? renderMovie(movie, token) : renderHome();
     }
     clearInterval(slideTimer);
+    if ((m = h.match(/^#\/games(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderGames(m[1] || "upcoming", m[2] || "");
     if ((m = h.match(/^#\/tv(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderTV(m[1] || "airing", m[2] || "", m[3] || "");
     if ((m = h.match(/^#\/anime(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderAnime(m[1] || "schedule", m[2] || "", m[3] || "");
     if (h === "#/explore") return renderExplore();
@@ -2556,6 +2735,8 @@
     const more = t.closest("[data-more]");
     if (more) return loadMore(more.dataset.more);
     if (t.closest("[data-anime-retry]")) return route();
+    const gt = t.closest("[data-game-trailer]");
+    if (gt && currentGame?.trailers?.length) return openTrailer({ id: currentGame.id, title: currentGame.title, trailers: currentGame.trailers }, +gt.dataset.gameTrailer);
     const sn = t.closest("[data-season]");
     if (sn && tvPage) { $("#episodes").outerHTML = seasonsBlock(tvPage.eps, tvPage.seasons, +sn.dataset.season); return; }
     if (t.closest("[data-tv-trailer]")) {

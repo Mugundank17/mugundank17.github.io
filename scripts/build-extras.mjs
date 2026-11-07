@@ -42,6 +42,13 @@ const sections = {
       attribution: "Show data from TMDB. Episode schedules from TVmaze (CC BY-SA 4.0).",
     });
   },
+  async games() {
+    const { buildGames } = await import("./providers/games.mjs");
+    const { index, details } = await buildGames({ countries: ["US", "IN", "GB"] });
+    await writeSection("games", index, details, {
+      attribution: "PC game data from Steam (store.steampowered.com). Console and cross-platform data from IGDB.com.",
+    });
+  },
 };
 
 let failed = 0;
