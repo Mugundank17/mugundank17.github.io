@@ -53,7 +53,7 @@ jobs:
       - name: Prepare site
         run: |
           mkdir -p _site
-          cp -r index.html style.css app.js tickets.js movies.js data _site/
+          cp -r index.html style.css app.js tickets.js movies.js data icons manifest.webmanifest sw.js _site/
           touch _site/.nojekyll
 
       # Also publish the built site to the gh-pages branch, so it works when

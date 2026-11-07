@@ -2227,6 +2227,30 @@
   }
   document.documentElement.lang = LANG;
 
+  // ---------- installable app (PWA) ----------
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+  let installPrompt = null;
+  const installBtn = $("#installBtn");
+  addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    installBtn.hidden = false;
+  });
+  installBtn.addEventListener("click", async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => {});
+    installPrompt = null;
+    installBtn.hidden = true;
+  });
+  addEventListener("appinstalled", () => { installBtn.hidden = true; toast("Countdown installed — find it on your home screen"); });
+  // Offline notice (the app keeps working from its saved copy).
+  const netToast = () => toast(navigator.onLine ? "Back online" : "You're offline — showing saved data");
+  addEventListener("online", netToast);
+  addEventListener("offline", netToast);
+
   fillCountries();
   updateLocText();
   route();

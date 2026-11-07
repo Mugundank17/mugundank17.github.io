@@ -29,6 +29,10 @@ A cinematic, streaming-style website with live countdowns to upcoming movie rele
 - **Where to watch** on each movie: official streaming, rent and buy options in the visitor's country (JustWatch via TMDB).
 - **Waiting room** (`#/wait/<movie>`) — a full-screen countdown you join for a movie, with your wait progress, milestones, trailers and an invite link. Waiting rooms and follows are saved in the visitor's browser.
 
+## Android app
+
+Countdown is an installable web app (PWA). On Android, open the site in Chrome and tap **Install app** (or ⋮ → *Add to Home screen* → *Install*). It installs with its own icon, opens full-screen, and works offline with the last-loaded data. Updates arrive automatically: the app loads the latest published version whenever it's opened online.
+
 ## Setup
 
 1. Get a free TMDB account and copy your **API Read Access Token** from https://www.themoviedb.org/settings/api.

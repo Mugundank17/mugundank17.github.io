@@ -6,7 +6,13 @@
   <title>Countdown — movie release countdowns</title>
   <meta name="description" content="Live countdowns to the biggest upcoming movie releases.">
   <meta name="theme-color" content="#060606">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Countdown">
+  <link rel="icon" type="image/png" href="icons/favicon-64.png"><text y='.9em' font-size='90'>🎬</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -49,6 +55,7 @@
     <p>Release dates and ratings follow the country you pick at the top. Dates change often — always check with your local cinema.</p>
     <p class="muted">Movie data, images and trailer links from <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>. This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
     <p class="muted" id="updated"></p>
+    <p><button class="btn btn-solid btn-sm" id="installBtn" type="button" hidden>📲 Install Countdown app</button></p>
   </footer>
 
   <!-- Location -->
