@@ -11,7 +11,7 @@
  * One game = one record; every platform / region date is kept in `releaseDates`.
  */
 import { pool } from "../lib/http.mjs";
-import { discoverUpcoming, fetchGame } from "./steam.mjs";
+import { queryUpcoming, getItems } from "./steam.mjs";
 import { igdbConfigured, upcomingGames, gamesBySteamIds } from "./igdb.mjs";
 
 const normTitle = (s) => String(s || "").toLowerCase().normalize("NFKD").replace(/[™®©]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
@@ -90,10 +90,11 @@ function fromIGDB(g) {
   }, g);
 }
 
-export async function buildGames({ countries = ["US", "IN", "GB"], maxSteam = 45, log = console.log } = {}) {
-  // 1. Steam: upcoming PC games (Coming Soon lists)
-  const steamIds = (await discoverUpcoming(countries[0])).slice(0, maxSteam);
-  log(`  Steam: ${steamIds.length} upcoming apps discovered`);
+export async function buildGames({ countries = ["US", "IN", "GB"], maxSteam = 300, maxDLC = 60, log = console.log } = {}) {
+  // 1. Steam Web API: the most popular upcoming games + DLC (official, keyless, batched)
+  const steamIds = await queryUpcoming({ kind: "games", count: maxSteam, cc: countries[0] });
+  const dlcIds = await queryUpcoming({ kind: "dlc", count: maxDLC, cc: countries[0] });
+  log(`  Steam: ${steamIds.length} upcoming games + ${dlcIds.length} DLC discovered`);
 
   // 2. IGDB (optional — needs Twitch credentials): most hyped upcoming, all platforms
   let igdbGames = [];
@@ -103,8 +104,7 @@ export async function buildGames({ countries = ["US", "IN", "GB"], maxSteam = 45
       igdbGames = await upcomingGames({ pages: 2, perPage: 100 });
       igdbOK = true;
       log(`  IGDB: ${igdbGames.length} upcoming games`);
-      const fromIgdbSteam = igdbGames.map((g) => g.steam).filter(Boolean);
-      for (const id of fromIgdbSteam.slice(0, 25)) if (!steamIds.includes(id)) steamIds.push(id);
+      for (const id of igdbGames.map((g) => g.steam).filter(Boolean).slice(0, 50)) if (!steamIds.includes(id)) steamIds.push(id);
     } catch (err) {
       log(`! IGDB failed (${err.message.slice(0, 160)}) — continuing with Steam only`);
     }
@@ -112,9 +112,17 @@ export async function buildGames({ countries = ["US", "IN", "GB"], maxSteam = 45
     log("  IGDB: skipped (add TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET secrets to enable consoles)");
   }
 
-  const steamRank = new Map(steamIds.map((id, i) => [id, i + 1])); // Coming Soon "Top Sellers" (most wishlisted) first
-  const steam = (await pool(steamIds, 1, (id) => fetchGame(id, { countries }))).filter(Boolean);
-  log(`  Steam: ${steam.length} games/DLC fetched`);
+  const steamRank = new Map(steamIds.map((id, i) => [id, i + 1])); // Steam popularity order
+  const items = await getItems([...steamIds, ...dlcIds.filter((id) => !steamIds.includes(id))], { countries });
+  // DLC: attach to their parent game when it is on the list, and name the parent.
+  for (const s of items.values()) {
+    if (s.parent) {
+      const p = items.get(s.parent.steam);
+      if (p) { s.parent.name = p.name; p.dlc.push({ steam: s.steam, name: s.name, release: s.release, url: s.url }); p.dlcCount++; }
+    }
+  }
+  const steam = [...items.values()];
+  log(`  Steam: ${steam.filter((x) => x.type === "game").length} games, ${steam.filter((x) => x.type === "dlc").length} DLC with details`);
 
   // 3. Merge: by Steam id (verified external id) first
   const games = new Map(steam.map((s) => [s.steam, fromSteam(s)]));
