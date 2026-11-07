@@ -5,13 +5,13 @@
  * next time the app is opened online; the last copy is kept for offline use.
  * Posters and artwork: served from cache when available (they never change).
  */
-const SITE = "countdown-site-v1";
+const SITE = "countdown-site-v2";
 const IMAGES = "countdown-images-v1";
 const MAX_IMAGES = 400;
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();
-  e.waitUntil(caches.open(SITE).then((c) => c.addAll(["./", "index.html", "style.css", "app.js", "tickets.js", "movies.js", "icons/icon-192.png"]).catch(() => {})));
+  e.waitUntil(caches.open(SITE).then((c) => c.addAll(["./", "index.html", "style.css", "app.js", "tickets.js", "providers/release.js", "providers/anilist.js", "movies.js", "icons/icon-192.png"]).catch(() => {})));
 });
 
 self.addEventListener("activate", (e) => {
@@ -33,7 +33,7 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
 
   // TMDB posters / backdrops / photos: cache first.
-  if (url.hostname === "image.tmdb.org" && !url.pathname.includes("/original/")) {
+  if ((url.hostname === "image.tmdb.org" && !url.pathname.includes("/original/")) || url.hostname === "s4.anilist.co") {
     e.respondWith((async () => {
       const c = await caches.open(IMAGES);
       const hit = await c.match(req);

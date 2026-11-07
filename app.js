@@ -345,6 +345,7 @@
         </div>
         <nav class="chips home-filters" aria-label="Browse">
           ${BROWSE_TABS.map(([k, label]) => `<a href="#/browse/${k}">${label}</a>`).join("")}
+          <a href="#/anime">🎌 Anime</a>
           <a href="#/feed">📰 Feed</a>
           <a href="#/rankings">🔥 Rankings</a>
           <a href="#/clashes">⚔ Clashes</a>
@@ -364,12 +365,14 @@
           card, "", `<a class="row-link" href="#/browse/ott">All OTT ›</a>`)}
         ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
         ${languageRows()}
+        <div id="animeAiring"></div>
         <div id="onThisDay"></div>
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
         ${row("row-out", `Out Now ${inHere}`, released().slice(0, 20))}
       </div>`;
     startEmbers($(".billboard canvas"), hero.hue);
     fillOnThisDay(routeToken);
+    fillAnimeRow(routeToken);
   }
 
   // ---------- release calendar ----------
@@ -919,6 +922,12 @@
   }
 
   function runSearch() {
+    const raw = searchInput.value.trim();
+    if (searchFilter === "anime") {
+      searchResults.innerHTML = raw.length < 2 ? `<p class="search-empty">Search anime on AniList — e.g. Frieren, One Piece.</p>` : `<div id="animeResults"></div>`;
+      if (raw.length >= 2) animeSearchInto(raw, $("#animeResults"));
+      return;
+    }
     const q = norm(searchInput.value.trim());
     if (!q) {
       const pick = anticipated().slice(0, 8);
@@ -961,7 +970,9 @@
           <strong>${esc(p.name)}</strong><span>${esc(p.dept === "Acting" ? "Actor" : p.dept === "Directing" ? "Director" : p.dept || "")}</span>
         </a>`).join("")}</div>` : ""}
       ${movies.length ? `<p class="search-label">${label}</p>${movies.map(searchMovie).join("")}` : ""}
-      ${!movies.length && !people.length ? `<p class="search-empty">No results for “${esc(searchInput.value)}”.</p>` : ""}`;
+      ${f === "all" ? `<div id="animeResults"></div>` : ""}
+      ${!movies.length && !people.length && f !== "all" ? `<p class="search-empty">No results for “${esc(searchInput.value)}”.</p>` : ""}`;
+    if (f === "all") animeSearchInto(searchInput.value.trim(), $("#animeResults"));
   }
 
   function searchMovie(m) {
@@ -985,7 +996,7 @@
     searchFilter = b.dataset.filter;
     $$("#searchFilters button").forEach((x) => x.classList.toggle("active", x === b));
     searchInput.placeholder = { all: "Search movies, actors, directors, languages…", movies: "Search movie titles…",
-      actors: "Search actors…", directors: "Search directors…" }[searchFilter];
+      actors: "Search actors…", directors: "Search directors…", anime: "Search anime on AniList…" }[searchFilter];
     searchInput.focus();
     runSearch();
   });
@@ -1739,6 +1750,280 @@
     if (e.target === surpriseDlg || e.target.closest(".close") || e.target.closest("[data-close-surprise]") || e.target.closest("[data-wait]")) surpriseDlg.close();
   });
 
+
+  // =====================================================================
+  // Anime (AniList provider → unified Release objects)
+  // Pages here only use Release fields; AniList specifics live in providers/anilist.js.
+  // =====================================================================
+  const anime = window.Countdown?.providers?.anilist;
+  const animeHref = (r) => `#/anime/${encodeURIComponent(r.sourceId)}`;
+  const relHue = (r) => { const h = r.color ? hexToHue(r.color) : 330; return [h, (h + 30) % 360]; };
+  const SEASON_LABEL = { WINTER: "Winter", SPRING: "Spring", SUMMER: "Summer", FALL: "Fall" };
+  const seasonLabel = (s) => (s ? `${SEASON_LABEL[s.name] || s.name} ${s.year}` : "");
+  const timeOfDay = (t) => new Date(t).toLocaleTimeString(LANG, { hour: "numeric", minute: "2-digit" });
+  const STATUS_LABEL = { upcoming: "Not yet aired", releasing: "Airing", finished: "Finished", cancelled: "Cancelled", hiatus: "On hiatus", unknown: "" };
+
+  function releaseDateLabel(r) {
+    if (!r.releaseDate) return r.season ? seasonLabel(r.season) : "Date TBA";
+    const t = parseDay(r.releaseDate);
+    if (r.datePrecision === "day") return shortDate(t);
+    if (r.datePrecision === "month") return fmt(t, { month: "long", year: "numeric" });
+    return r.season ? seasonLabel(r.season) : r.releaseDate.slice(0, 4);
+  }
+
+  function animeCard(r) {
+    const ep = r.nextEpisode;
+    return `
+      <a class="gcard" href="${animeHref(r)}" style="${theme(relHue(r))}">
+        <div class="gcard-art" style="${bg(r.poster)}">
+          <span class="tag tag-type t-anime">🎌 ${esc(r.format || "Anime")}</span>
+          ${r.score ? `<span class="tag tag-score">★ ${r.score}</span>` : ""}
+        </div>
+        <strong>${esc(r.title)}</strong>
+        ${r.originalTitle ? `<span class="gcard-orig">${esc(r.originalTitle)}</span>` : ""}
+        <span class="gcard-meta">${ep ? `Ep ${ep.number}${r.episodes ? `/${r.episodes}` : ""} · ${esc(fmt(ep.airingAt, { weekday: "short" }))} ${esc(timeOfDay(ep.airingAt))}`
+          : esc(releaseDateLabel(r))}${r.studios[0] ? ` · ${esc(r.studios[0].name)}` : ""}</span>
+        ${r.countdownTo ? countdownAt(r.countdownTo, "cd-mini", ep ? "Aired" : "Out now") : ""}
+      </a>`;
+  }
+  const animeRailCard = (r) => animeCard(r).replace('class="gcard"', 'class="gcard in-rail"');
+
+  const ANIME_TABS = [["schedule", "📅 Airing schedule"], ["season", "🍂 This season"], ["upcoming", "🔜 Upcoming"], ["search", "🔍 Search"]];
+  const animeTabs = (active) => `<nav class="tabs">${ANIME_TABS.map(([k, label]) =>
+    `<a class="${k === active ? "active" : ""}" href="#/anime/${k}">${label}</a>`).join("")}</nav>`;
+  const animeHead = (heading, active, extra = "") => `
+    <header class="browse-head"><p class="kicker">🎌 Anime · via AniList</p><h1 class="cal-title">${heading}</h1>${extra}</header>
+    ${animeTabs(active)}`;
+  const animeError = (err) => `<div class="cal-empty">Couldn't reach AniList right now (${esc(err.message || err)}).
+    <button class="btn btn-ghost btn-sm" type="button" data-anime-retry>Try again</button></div>`;
+
+  // Paged list: renders page 1, then "Load more" appends the next page.
+  const pagers = new Map();
+  async function mountPaged(id, load, render, { empty = "Nothing here yet.", wrap = (h) => h } = {}) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const state = { page: 0, load, render, wrap, items: [], hasNext: true, empty, token: routeToken };
+    pagers.set(id, state);
+    await loadMore(id);
+  }
+  async function loadMore(id) {
+    const st = pagers.get(id), el = document.getElementById(id);
+    if (!st || !el) return;
+    const btn = $(`[data-more="${id}"]`);
+    if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+    try {
+      const res = await st.load(st.page + 1);
+      if (st.token !== routeToken) return;
+      st.page = res.page.current; st.hasNext = res.page.hasNext;
+      st.items.push(...res.items);
+      el.innerHTML = st.items.length ? st.wrap(st.items.map(st.render).join("")) +
+        (st.hasNext ? `<div class="more-wrap"><button class="btn btn-ghost" type="button" data-more="${id}">Load more</button></div>` : "")
+        : `<div class="cal-empty">${st.empty}</div>`;
+    } catch (err) {
+      if (st.token !== routeToken) return;
+      if (st.items.length && btn) { btn.disabled = false; btn.textContent = "Couldn't load — try again"; }
+      else el.innerHTML = animeError(err);
+    }
+  }
+
+  function renderAnime(tab = "schedule", arg = "", arg2 = "") {
+    if (!anime) return renderMessage("Anime unavailable", "The AniList provider didn't load.");
+    if (/^\d+$/.test(tab)) return renderAnimeDetail(tab);
+    if (!ANIME_TABS.some(([k]) => k === tab)) tab = "schedule";
+    document.title = "Anime — Countdown";
+    const spinner = `<div class="loading-strip"><div class="spinner"></div></div>`;
+
+    if (tab === "schedule") {
+      const day = arg && /^\d{4}-\d{2}-\d{2}$/.test(arg) ? parseDay(arg) : startOfDay();
+      const days = Array.from({ length: 8 }, (_, i) => startOfDay() + (i - 1) * DAY);
+      app.innerHTML = `<section class="browse">
+        ${animeHead("Airing schedule", "schedule")}
+        <div class="chips browse-chips">${days.map((d) => `<a class="${d === day ? "active" : ""}" href="#/anime/schedule/${dayKey(d)}">
+          ${d === startOfDay() ? "Today" : d === startOfDay() + DAY ? "Tomorrow" : d === startOfDay() - DAY ? "Yesterday" : esc(fmt(d, { weekday: "short", day: "numeric" }))}</a>`).join("")}</div>
+        <p class="muted small">Episode times in your time zone · ${esc(longDate(day))}</p>
+        <div id="animeList">${spinner}</div></section>`;
+      return mountPaged("animeList", (page) => anime.schedule({ from: day, to: day + DAY, page, perPage: 50 }), scheduleItem,
+        { empty: "No episodes scheduled for this day.", wrap: (h) => `<div class="sched">${h}</div>` });
+    }
+
+    if (tab === "season") {
+      const cur = anime.currentSeason();
+      const s = arg && arg2 ? { name: arg2.toUpperCase(), year: +arg } : cur;
+      const sort = new URLSearchParams(location.hash.split("?")[1] || "").get("sort") || "POPULARITY_DESC";
+      const prev = anime.shiftSeason(s, -1), next = anime.shiftSeason(s, 1);
+      const base = `#/anime/season/${s.year}/${s.name.toLowerCase()}`;
+      app.innerHTML = `<section class="browse">
+        ${animeHead(`${seasonLabel(s)} anime`, "season")}
+        <div class="hist-controls">
+          <a class="round" href="#/anime/season/${prev.year}/${prev.name.toLowerCase()}" aria-label="Previous season">‹</a>
+          <strong>${esc(seasonLabel(s))}</strong>
+          <a class="round" href="#/anime/season/${next.year}/${next.name.toLowerCase()}" aria-label="Next season">›</a>
+          ${s.name !== cur.name || s.year !== cur.year ? `<a class="btn btn-solid btn-sm" href="#/anime/season">This season</a>` : ""}
+          <div class="seg">${[["POPULARITY_DESC", "Popular"], ["SCORE_DESC", "Top rated"], ["START_DATE", "Start date"], ["TRENDING_DESC", "Trending"]]
+            .map(([k, l]) => `<a class="${k === sort ? "active" : ""}" href="${base}?sort=${k}">${l}</a>`).join("")}</div>
+        </div>
+        <div id="animeList">${spinner}</div></section>`;
+      return mountPaged("animeList", (page) => anime.seasonal({ season: s.name, year: s.year, page, sort }), animeCard,
+        { empty: "No anime announced for this season yet.", wrap: (h) => `<div class="ggrid">${h}</div>` });
+    }
+
+    if (tab === "upcoming") {
+      app.innerHTML = `<section class="browse">
+        ${animeHead("Upcoming anime", "upcoming")}
+        <p class="muted small">Announced and not yet aired, most anticipated first (AniList popularity).</p>
+        <div id="animeList">${spinner}</div></section>`;
+      return mountPaged("animeList", (page) => anime.upcoming({ page }), animeCard,
+        { wrap: (h) => `<div class="ggrid">${h}</div>` });
+    }
+
+    // search
+    const q = decodeURIComponent(arg || "");
+    app.innerHTML = `<section class="browse">
+      ${animeHead("Search anime", "search")}
+      <form class="anime-search" id="animeSearchForm">
+        <input id="animeQ" type="search" value="${esc(q)}" placeholder="Search anime titles (English, romaji or Japanese)…" autocomplete="off" aria-label="Search anime">
+        <button class="btn btn-solid" type="submit">Search</button>
+      </form>
+      <div id="animeList">${q ? spinner : `<div class="cal-empty">Type a title — e.g. Frieren, One Piece, 葬送のフリーレン.</div>`}</div></section>`;
+    $("#animeSearchForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const v = $("#animeQ").value.trim();
+      if (v) location.hash = `#/anime/search/${encodeURIComponent(v)}`;
+    });
+    if (q) mountPaged("animeList", (page) => anime.search({ query: q, page }), animeCard,
+      { empty: `No anime found for “${esc(q)}”.`, wrap: (h) => `<div class="ggrid">${h}</div>` });
+  }
+
+  function scheduleItem({ release: r, episode, airingAt }) {
+    return `
+      <a class="sched-item ${airingAt <= Date.now() ? "aired" : ""}" href="${animeHref(r)}" style="${theme(relHue(r))}">
+        <span class="sched-time">${esc(timeOfDay(airingAt))}</span>
+        <span class="sched-poster" style="${bg(r.poster)}"></span>
+        <span class="sched-body">
+          <strong>${esc(r.title)}</strong>
+          <span class="muted small">Episode ${episode}${r.episodes ? ` of ${r.episodes}` : ""} · ${esc(r.format)}${r.studios[0] ? ` · ${esc(r.studios[0].name)}` : ""}</span>
+        </span>
+        ${countdownAt(airingAt, "cd-mini", "Aired")}
+      </a>`;
+  }
+
+  async function renderAnimeDetail(id) {
+    const token = routeToken;
+    app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
+    let r;
+    try { r = await anime.detail(id); } catch (err) {
+      if (token === routeToken) app.innerHTML = `<section class="browse">${animeError(err)}</section>`;
+      return;
+    }
+    if (token !== routeToken) return;
+    if (!r) return renderMessage("Anime not found", "AniList has no anime with this id.");
+    document.title = `${r.title} — Countdown`;
+    const hue = relHue(r);
+    const ep = r.nextEpisode;
+    const aired = ep ? ep.number - 1 : r.status === "finished" ? r.episodes : 0;
+    const studios = r.studios.map((s) => esc(s.name)).join(" &amp; ");
+    const facts = [
+      ["Format", r.format], ["Status", STATUS_LABEL[r.status]],
+      ["Episodes", r.episodes ? `${r.episodes}${r.duration ? ` × ${r.duration} min` : ""}` : r.duration ? `${r.duration} min` : ""],
+      ["Season", seasonLabel(r.season)], ["Start date", r.releaseDate ? releaseDateLabel(r) : ""],
+      ["Studio", r.studios.map((s) => s.name).join(", ")], ["Source", r.extra?.source ? r.extra.source.replace(/_/g, " ").toLowerCase() : ""],
+      ["Score", r.score ? `${r.score}%` : ""], ["Popularity", r.popularity ? `${r.popularity.toLocaleString(LANG)} members` : ""],
+      ["Genres", r.genres.join(", ")], ["Country", r.country ? countryName(r.country) : ""],
+    ].filter(([, v]) => v);
+    const ORDER = ["SEQUEL", "PREQUEL", "PARENT", "SIDE_STORY", "SPIN_OFF", "ALTERNATIVE"];
+    const rel = (r.extra?.relations || []).filter((x) => x.release)
+      .sort((a, b) => ((ORDER.indexOf(a.relation) + 1 || 99) - (ORDER.indexOf(b.relation) + 1 || 99))).slice(0, 24);
+    const recs = (r.extra?.recommendations || []).filter(Boolean);
+    currentAnime = r;
+
+    app.innerHTML = `
+      <header class="cine hero anime-hero" style="${theme(hue)}">
+        ${fireLayers(r.banner || r.posterLarge, orb)}
+        <div class="hero-body">
+          <p class="byline re">🎌 ${esc(r.format || "Anime")}${r.season ? ` · ${esc(seasonLabel(r.season))}` : ""}${STATUS_LABEL[r.status] ? ` · ${esc(STATUS_LABEL[r.status])}` : ""}</p>
+          ${studios ? `<p class="byline">Animation by <strong>${studios}</strong></p>` : ""}
+          <h1 class="mega" style="--len:${longestWord(r.title)}">${esc(r.title)}</h1>
+          ${r.originalTitle ? `<p class="orig-title" lang="ja">${esc(r.originalTitle)}</p>` : ""}
+          ${ep ? `<p class="tagline">Episode ${ep.number}${r.episodes ? ` of ${r.episodes}` : ""} airs ${esc(fmt(ep.airingAt, { weekday: "long", month: "short", day: "numeric" }))} at ${esc(timeOfDay(ep.airingAt))}</p>`
+            : r.status === "upcoming" ? `<p class="tagline">Premieres ${esc(releaseDateLabel(r))}</p>` : ""}
+          ${r.countdownTo ? countdownAt(r.countdownTo, "cd-hero", ep ? "Airing now" : "Out now") : r.status === "upcoming" ? `<p class="local-note">Exact date not announced yet.</p>` : ""}
+          ${r.episodes && aired > 0 && r.status === "releasing" ? `
+            <div class="wr-progress"><div class="wr-bar"><span style="width:${Math.min(100, (aired / r.episodes) * 100).toFixed(1)}%"></span></div>
+            <p>${aired} of ${r.episodes} episodes aired</p></div>` : ""}
+          <div class="cta cta-center">
+            ${r.trailer ? `<button class="play" type="button" data-anime-trailer><span>▶</span> Watch Trailer</button>` : ""}
+            ${r.watch.length ? `<a class="btn btn-outline" href="#where" data-scroll="where">📺 Where to watch</a>` : ""}
+          </div>
+        </div>
+      </header>
+
+      <section class="about">
+        <div>
+          <p class="kicker">Synopsis</p>
+          <div class="about-text anime-desc">${(r.description || "No description yet.").split(/\n+/).map((t) => `<p>${esc(t)}</p>`).join("")}</div>
+          ${r.tags.length ? `<div class="chips anime-tags">${r.tags.map((t) => `<span class="pill">${esc(t)}</span>`).join("")}</div>` : ""}
+        </div>
+        <dl class="facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+      </section>
+
+      <section class="watchwhere" id="where">
+        <div class="art-head"><p class="kicker">Where to watch</p></div>
+        ${r.watch.length ? `<div class="ww-links">${r.watch.map((w) => `
+          <a class="ww-link" href="${esc(w.url)}" target="_blank" rel="noopener" style="--wc:${esc(w.color || "#444")}">
+            ${w.icon ? `<img src="${esc(w.icon)}" alt="" loading="lazy">` : ""}<span>${esc(w.name)}</span>${w.language ? `<small>${esc(w.language)}</small>` : ""}</a>`).join("")}</div>`
+          : `<p class="ww-none">No official streaming links listed yet.</p>`}
+        <p class="muted small">Official streaming links from <a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">AniList</a>. Availability depends on your region.</p>
+      </section>
+
+      <div class="rows anime-rows">
+        ${rel.length ? row("anime-rel", "Related", rel, ({ relation, release }) => animeRailCard(release)
+          .replace('<strong>', `<span class="rel-type">${esc(relation.replace(/_/g, " ").toLowerCase())}</span><strong>`), "rail-posters") : ""}
+        ${recs.length ? row("anime-recs", "Recommended", recs, animeRailCard, "rail-posters") : ""}
+      </div>
+      <p class="muted small attribution">Anime data from <a href="https://anilist.co" target="_blank" rel="noopener">AniList</a>.</p>`;
+    startEmbers($(".anime-hero canvas"), hue, 0.7);
+  }
+  let currentAnime = null;
+
+  // Home row: episodes airing in the next 24 hours.
+  async function fillAnimeRow(token) {
+    const el = $("#animeAiring");
+    if (!el || !anime) return;
+    try {
+      const res = await anime.schedule({ from: Date.now(), to: Date.now() + DAY, perPage: 50 });
+      if (token !== routeToken) return;
+      const seen = new Set();
+      const items = res.items.filter((x) => !seen.has(x.release.id) && seen.add(x.release.id))
+        .sort((a, b) => (b.release.popularity || 0) - (a.release.popularity || 0)).slice(0, 20)
+        .sort((a, b) => a.airingAt - b.airingAt);
+      if (!items.length) return el.remove();
+      el.outerHTML = row("row-anime", "🎌 Anime Airing in the Next 24 Hours", items,
+        ({ release, episode, airingAt }) => animeRailCard({ ...release, nextEpisode: { number: episode, airingAt }, countdownTo: airingAt }),
+        "rail-posters", `<a class="row-link" href="#/anime">Full schedule ›</a>`);
+    } catch (_) { el.remove(); }
+  }
+
+  // Anime results inside the main search dialog (debounced; AniList is rate-limited).
+  let animeSearchTimer = null;
+  function animeSearchInto(q, el) {
+    clearTimeout(animeSearchTimer);
+    if (!anime || q.length < 2) { el.innerHTML = ""; return; }
+    el.innerHTML = `<p class="search-label">🎌 Anime</p><p class="muted small" style="padding:0 10px">Searching AniList…</p>`;
+    animeSearchTimer = setTimeout(async () => {
+      try {
+        const res = await anime.search({ query: q, perPage: 8 });
+        if (searchInput.value.trim() !== q) return;
+        el.innerHTML = res.items.length ? `<p class="search-label">🎌 Anime</p>${res.items.map((r) => `
+          <a class="sm" href="${animeHref(r)}">
+            <span class="sm-poster" style="${bg(r.poster)}"></span>
+            <span class="sm-body"><strong>${esc(r.title)}</strong>${r.originalTitle ? `<span class="sm-orig">${esc(r.originalTitle)}</span>` : ""}
+              <span class="sm-meta">${esc(r.format)} · ${esc(STATUS_LABEL[r.status] || "")}${r.studios[0] ? ` · ${esc(r.studios[0].name)}` : ""}</span></span>
+            <span class="sm-cd">${r.countdownTo ? `${Math.max(0, Math.ceil((r.countdownTo - Date.now()) / DAY))}<small>${r.nextEpisode ? `days · ep ${r.nextEpisode.number}` : "days"}</small>` : `<span class="muted small">${esc(releaseDateLabel(r))}</span>`}</span>
+          </a>`).join("")}` : "";
+      } catch (_) { el.innerHTML = ""; }
+    }, 450);
+  }
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1834,6 +2119,7 @@
       return movie ? renderMovie(movie, token) : renderHome();
     }
     clearInterval(slideTimer);
+    if ((m = h.match(/^#\/anime(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderAnime(m[1] || "schedule", m[2] || "", m[3] || "");
     if (h === "#/explore") return renderExplore();
     if ((m = h.match(/^#\/history(?:\/([\w-]+))?$/))) return renderHistory(m[1], token);
     if ((m = h.match(/^#\/delays(?:\/(all))?$/))) return renderDelays(m[1] || "");
@@ -1948,6 +2234,12 @@
     }
 
     if (t.closest("[data-surprise]")) { e.preventDefault(); return surprise(); }
+    const more = t.closest("[data-more]");
+    if (more) return loadMore(more.dataset.more);
+    if (t.closest("[data-anime-retry]")) return route();
+    if (t.closest("[data-anime-trailer]") && currentAnime?.trailer) {
+      return openTrailer({ id: currentAnime.id, title: currentAnime.title, trailers: [currentAnime.trailer] });
+    }
     const cmp = t.closest("[data-cmp]");
     if (cmp) {
       let picked = readJSON(CMP_KEY, null) || [...new Set([HOME_COUNTRY, "US", "GB", "JP", "KR", "FR", "DE", "BR"])].slice(0, 6);

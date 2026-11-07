@@ -29,6 +29,14 @@ A cinematic, streaming-style website with live countdowns to upcoming movie rele
 - **Where to watch** on each movie: official streaming, rent and buy options in the visitor's country (JustWatch via TMDB).
 - **Waiting room** (`#/wait/<movie>`) — a full-screen countdown you join for a movie, with your wait progress, milestones, trailers and an invite link. Waiting rooms and follows are saved in the visitor's browser.
 
+## Anime (AniList)
+
+Anime comes live from [AniList](https://anilist.co)'s public GraphQL API (`https://graphql.anilist.co`, POST, no key or OAuth) — fetched in the visitor's browser, not by the GitHub Action.
+
+- `providers/release.js` — the unified **Release** interface every provider maps into, plus a shared TTL cache (memory + localStorage).
+- `providers/anilist.js` — the AniList adapter: GraphQL queries, request spacing for AniList's rate limit (~30/min), de-duplication, 429 retry, caching (schedule 10 min, lists 3 h, search 30 min, details 1 h, stale fallback when offline), pagination, and mapping AniList `Media` → `Release`.
+- Pages (`#/anime/…`): airing schedule by day with episode countdowns, seasonal anime (any season, sortable), upcoming anime, search, and detail pages with posters, studios, genres, description, trailer, official streaming links, related titles and recommendations. Anime also appears in the main search and on the home page ("airing in the next 24 hours").
+
 ## Android app
 
 Countdown is an installable web app (PWA). On Android, open the site in Chrome and tap **Install app** (or ⋮ → *Add to Home screen* → *Install*). It installs with its own icon, opens full-screen, and works offline with the last-loaded data. Updates arrive automatically: the app loads the latest published version whenever it's opened online.
