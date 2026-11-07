@@ -158,6 +158,12 @@
   const upcomingHere = () => upcoming().filter(datedHere);
   const released = () => listed().filter((m) => !isRe(m) && isOut(m) && datedHere(m)).sort((a, b) => byDate(b, a));
   const rereleases = () => listed().filter(isRe).sort(byDate);
+  // Showing in cinemas right now (TMDB now playing) in the visitor's country.
+  const nowPlaying = () => {
+    const key = isWorld() ? null : COUNTRY;
+    return all().filter((m) => m.playing && (key ? m.playing[key] : Object.keys(m.playing).length))
+      .sort((a, b) => (key ? a.playing[key] - b.playing[key] : (b.pop || 0) - (a.pop || 0)));
+  };
 
   // Most anticipated in the visitor's country (or worldwide if we don't rank that country).
   const rankKey = () => (REGIONS.has(COUNTRY) ? COUNTRY : "WW");
@@ -245,7 +251,8 @@
   function card(m) {
     const art = m.card || m.backdrop || m.poster;
     const d = Math.ceil((time(m) - Date.now()) / DAY);
-    const badge = isOut(m) ? `<span class="tag tag-out">${isRe(m) ? "Back in cinemas" : "Out now"}</span>`
+    const showing = m.playing && (isWorld() ? Object.keys(m.playing).length : m.playing[COUNTRY]);
+    const badge = isOut(m) ? `<span class="tag tag-out">${isRe(m) ? "Back in cinemas" : showing ? "🍿 In cinemas" : "Out now"}</span>`
       : d <= 30 ? `<span class="tag">${d <= 1 ? "Tomorrow" : `${d} days`}</span>` : "";
     return `
       <a class="card" href="${movieHref(m)}" style="${theme(m.hue)}">
@@ -358,6 +365,8 @@
         ${row("row-top", `Top 10 Most Anticipated in ${rankKey() === "WW" ? "the World" : here}`, top.slice(0, 10), rankCard, "rail-ranked")}
         ${row("row-week", `Releasing This Week ${inHere}`, thisWeek, card, "",
           `<a class="row-link" href="${calHref(dayKey(Date.now()), "week")}">Open calendar ›</a>`)}
+        ${row("row-playing", `🍿 In Cinemas Now ${inHere}`, nowPlaying().slice(0, 25), card, "",
+          `<a class="row-link" href="#/browse/theatrical">See all ›</a>`)}
         ${row("row-upcoming", `Coming Soon ${inHere}`, upcomingHere().slice(0, 30))}
         ${rankKey() !== "WW" ? row("row-world", "Worldwide Most Anticipated", anticipated("WW").slice(0, 20)) : ""}
         ${row("row-ott", `📺 Coming to Streaming ${inHere}`,
@@ -1125,7 +1134,11 @@
     if (tab === "theatrical") {
       const ev = [...pairs("cinema"), ...pairs("rerelease")].filter(([, e]) => !e.worldwide);
       body = gridSection(`Coming to cinemas ${inHere}`, ev.filter(([, e]) => e.t >= today).sort((a, b) => a[1].t - b[1].t)) +
-        gridSection(`In cinemas now ${inHere}`, ev.filter(([, e]) => e.t < today && e.t > now - 35 * DAY).sort((a, b) => b[1].t - a[1].t));
+        gridSection(`🍿 In cinemas now ${inHere}`, (() => {
+          const np = nowPlaying();
+          const extra = ev.filter(([m, e]) => e.t < today && e.t > now - 35 * DAY && !np.includes(m)).sort((a, b) => b[1].t - a[1].t);
+          return [...np.map((m) => [m, { type: "cinema", t: parseDay(thDate(m) || m.date), m }]), ...extra];
+        })());
     }
 
     if (tab === "ott") {

@@ -453,6 +453,19 @@ await pool(REGIONS, 4, async (region) => {
   console.log(`  ${region}: ${rel.length} releasing there, ${local.length} made there, ${stream.length} streaming`);
 });
 hot.WW = await worldwide(config.worldwide ?? 30);
+
+// Movies showing in cinemas right now, per country (TMDB "now playing").
+const playing = {};
+await pool(config.nowPlayingRegions || REGIONS, 4, async (region) => {
+  const ids = [];
+  for (let page = 1; page <= 2; page++) {
+    const { results = [] } = await tmdb("/movie/now_playing", { region, page });
+    for (const r of results) if (r.poster_path && !ids.includes(r.id)) ids.push(r.id);
+  }
+  playing[region] = ids.slice(0, config.nowPlayingPerRegion ?? 25);
+});
+const playingIds = new Set(Object.values(playing).flat());
+for (const id of playingIds) want(id, "auto");
 for (const r of [...REGIONS, "WW"]) for (const id of hot[r] || []) want(id, "auto");
 
 const rr = await pool(config.reReleaseRegions || [REGION], 4, (r) => rereleasesIn(r, 6));
@@ -463,7 +476,7 @@ console.log(`Building ${kinds.size} movies…`);
 const cutoff = Date.now() - (config.keepReleasedDays ?? 45) * DAY;
 const built = (await pool([...kinds], 8, ([id, kind]) => buildMovie(id, kind)))
   .filter(Boolean)
-  .filter(({ index: m }) => m.kind === "pinned" ||
+  .filter(({ index: m }) => m.kind === "pinned" || playingIds.has(m.tmdb) ||
     new Date(m.date).getTime() >= (m.kind === "rerelease" ? Date.now() - 21 * DAY : cutoff));
 
 // Delays: compare with the dates we published last time (date-history.json), plus TMDB's recent changes.
@@ -498,6 +511,11 @@ const byId = new Map(built.map((b) => [b.index.tmdb, b.index]));
 for (const [region, ids] of Object.entries(hot)) {
   let rank = 0;
   for (const id of ids) { const m = byId.get(id); if (m && m.kind !== "rerelease") m.hot[region] = ++rank; }
+}
+// "Now playing" ranks per region.
+for (const [region, ids] of Object.entries(playing)) {
+  let rank = 0;
+  for (const id of ids) { const m = byId.get(id); if (m) (m.playing ||= {})[region] = ++rank; }
 }
 
 // Remember yesterday's ranks so the site can show ▲ / ▼ movement.
