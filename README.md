@@ -45,6 +45,9 @@ Each section is a separate provider module in `scripts/providers/`; if one fails
 - **Games** — `steam.mjs` (primary, PC: Valve's public store endpoints only — Coming Soon lists + appdetails per storefront; no SteamDB) and `igdb.mjs` (PlayStation, Xbox, Nintendo, regional/platform release dates, DLC, franchises). Merged in `games.mjs` by Steam app id, or exact title + year when IGDB lists PC.
   - **IGDB needs Twitch credentials**: create an application at https://dev.twitch.tv/console/apps, then add repository secrets `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`. The token is requested server-side in the Action, cached for its `expires_in`, renewed automatically and never published. Without the secrets the games section is Steam-only (PC).
 
+- **Music** — `music.mjs`: ListenBrainz fresh releases (next 90 days + last 14 days) ranked with ListenBrainz's sitewide top-artists chart; MusicBrainz for types (album/single/EP/soundtrack/compilation), genres, regional release dates and official streaming links; Cover Art Archive artwork. Artist, release-group and release MBIDs are stored separately; date precision (year/month/day) is preserved and no release time is ever invented. In the browser, `providers/musicbrainz.js` powers artist pages (`#/artist/<mbid>`), album pages (`#/music/<mbid>`) and search at ≤1 request/second.
+  - `spotify.mjs` is optional: add `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` secrets to add Spotify links and artwork via the official Web API (no scraping).
+
 ## Android app
 
 Countdown is an installable web app (PWA). On Android, open the site in Chrome and tap **Install app** (or ⋮ → *Add to Home screen* → *Install*). It installs with its own icon, opens full-screen, and works offline with the last-loaded data. Updates arrive automatically: the app loads the latest published version whenever it's opened online.

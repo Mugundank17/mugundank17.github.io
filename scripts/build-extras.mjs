@@ -49,6 +49,27 @@ const sections = {
       attribution: "PC game data from Steam (store.steampowered.com). Console and cross-platform data from IGDB.com.",
     });
   },
+  async music() {
+    const { buildMusic } = await import("./providers/music.mjs");
+    const { spotifyConfigured, findAlbum } = await import("./providers/spotify.mjs");
+    const { index, details } = await buildMusic({ futureDays: 90, pastDays: 14, enrich: 140 });
+    if (spotifyConfigured()) {
+      let n = 0;
+      for (const [, d] of details) {
+        const hit = await findAlbum(d.title, d.artist).catch(() => null);
+        if (!hit) continue;
+        n++;
+        if (hit.url && !d.links.some((l) => l.name === "Spotify")) d.links.unshift({ name: "Spotify", url: hit.url });
+        if (!d.cover && hit.image) d.cover = hit.image;
+      }
+      console.log(`  Spotify: matched ${n} albums`);
+    } else {
+      console.log("  Spotify: skipped (optional — add SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET secrets)");
+    }
+    await writeSection("music", index, details, {
+      attribution: "Music data from MusicBrainz and ListenBrainz (MetaBrainz Foundation, CC0). Artwork from the Cover Art Archive.",
+    });
+  },
 };
 
 let failed = 0;

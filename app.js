@@ -354,6 +354,7 @@
           ${BROWSE_TABS.map(([k, label]) => `<a href="#/browse/${k}">${label}</a>`).join("")}
           <a href="#/tv">📺 TV</a>
           <a href="#/games">🎮 Games</a>
+          <a href="#/music">🎵 Music</a>
           <a href="#/anime">🎌 Anime</a>
           <a href="#/feed">📰 Feed</a>
           <a href="#/rankings">🔥 Rankings</a>
@@ -378,6 +379,7 @@
         ${languageRows()}
         <div id="tvSoon"></div>
         <div id="gamesSoon"></div>
+        <div id="musicSoon"></div>
         <div id="animeAiring"></div>
         <div id="onThisDay"></div>
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
@@ -388,6 +390,7 @@
     fillAnimeRow(routeToken);
     fillTVRow(routeToken);
     fillGamesRow(routeToken);
+    fillMusicRow(routeToken);
   }
 
   // ---------- release calendar ----------
@@ -1429,6 +1432,10 @@
     ["#/clashes", "⚔", "Release clashes", "Big films opening on the same day."],
     ["#/global", "🌍", "Global release comparison", "Compare release dates between countries."],
     ["surprise", "🎲", "Surprise me", "Discover a random upcoming release."],
+    ["#/tv", "📺", "TV series", "New episodes, premieres and streaming schedules."],
+    ["#/anime", "🎌", "Anime", "Airing schedule, seasons and upcoming anime."],
+    ["#/games", "🎮", "Games", "Upcoming PC and console games."],
+    ["#/music", "🎵", "Music", "Upcoming albums, singles and EPs."],
   ];
   function renderExplore() {
     document.title = "Explore — Countdown";
@@ -1440,7 +1447,6 @@
             ? `<button class="xtile" type="button" data-surprise><span class="xi">${icon}</span><strong>${name}</strong><span>${text}</span></button>`
             : `<a class="xtile" href="${href}"><span class="xi">${icon}</span><strong>${name}</strong><span>${text}</span></a>`).join("")}
         </div>
-        <p class="muted small">Albums and games aren't covered yet — Countdown's data source (TMDB) is film-only.</p>
       </section>`;
   }
   const pageHead = (kicker, heading, extra = "") => `
@@ -2520,6 +2526,267 @@
     el.outerHTML = row("row-games", "🎮 Upcoming Games", list, (g) => gameCard(g).replace('class="gcard"', 'class="gcard in-rail"'), "rail-posters", `<a class="row-link" href="#/games">All games ›</a>`);
   }
 
+
+  // =====================================================================
+  // Music — ListenBrainz discovery + MusicBrainz metadata (data/music/, built daily);
+  // providers/musicbrainz.js for artist pages, live album pages and search.
+  // =====================================================================
+  const mb = window.Countdown?.providers?.musicbrainz;
+  let musicP = null;
+  const loadMusic = () => (musicP ||= fetch("data/music/index.json").then((r) => (r.ok ? r.json() : { items: [] })).catch(() => { musicP = null; return { items: [] }; }));
+  const musicDetailCache = new Map();
+  const loadAlbum = (id) => {
+    if (!musicDetailCache.has(id)) musicDetailCache.set(id, fetch(`data/music/${id}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+    return musicDetailCache.get(id);
+  };
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const albumHref = (id) => `#/music/${id}`;
+  const artistHref = (id) => `#/artist/${id}`;
+  const MUSIC_TYPES = ["Album", "Single", "EP", "Soundtrack", "Compilation"];
+  const MUSIC_ATTR = `<p class="muted small attribution">Music data from <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a> and
+    <a href="https://listenbrainz.org" target="_blank" rel="noopener">ListenBrainz</a> (MetaBrainz Foundation, CC0). Artwork from the
+    <a href="https://coverartarchive.org" target="_blank" rel="noopener">Cover Art Archive</a>.</p>`;
+
+  // Dates keep their precision; music never gets a clock countdown (no release time is known).
+  function musicDate(date, precision) {
+    if (!date) return "Date TBA";
+    const t = parseDay(date.length === 4 ? `${date}-01-01` : date.length === 7 ? `${date}-01` : date);
+    return precision === "day" ? shortDate(t) : precision === "month" ? fmt(t, { month: "long", year: "numeric" }) : date.slice(0, 4);
+  }
+  function musicCountdown(date, precision) {
+    if (!date || precision !== "day") return `<span class="date-only">${date ? "Exact day not announced" : ""}</span>`;
+    const days = Math.round((parseDay(date) - startOfDay()) / DAY);
+    return `<span class="date-only">${days > 1 ? `In ${days} days` : days === 1 ? "Tomorrow" : days === 0 ? "Out today" : "Out now"}</span>`;
+  }
+
+  function musicCard(x) {
+    return `
+      <a class="gcard" href="${albumHref(x.id)}">
+        <div class="gcard-art sq" style="${bg(x.cover)}">${x.cover ? "" : `<span class="no-art">♪</span>`}
+          <span class="tag tag-type t-music">🎵 ${esc(x.type)}</span>
+          ${x.chart && x.chart <= 200 ? `<span class="tag tag-score">🔥 #${x.chart}</span>` : ""}
+        </div>
+        <strong>${esc(x.title)}</strong>
+        <span class="gcard-orig">${esc(x.artist)}</span>
+        <span class="gcard-meta">${esc(musicDate(x.date, x.precision))}${x.confirmed ? " · ✓ Confirmed" : ""}</span>
+        ${musicCountdown(x.date, x.precision)}
+      </a>`;
+  }
+
+  const MUSIC_TABS = [["upcoming", "🎵 Upcoming"], ["calendar", "📅 Calendar"], ["recent", "🆕 Just released"], ["search", "🔍 Search"]];
+  async function renderMusic(tab = "upcoming", a = "") {
+    const token = routeToken;
+    if (UUID.test(tab)) return renderAlbum(tab, token);
+    if (!MUSIC_TABS.some(([k]) => k === tab)) tab = "upcoming";
+    document.title = "Music — Countdown";
+    const params = new URLSearchParams(location.hash.split("?")[1] || "");
+    const type = params.get("type") || "", genre = params.get("genre") || "", artistQ = params.get("artist") || "";
+    const q = tab === "search" ? decodeURIComponent(a || "") : "";
+    const idx = await loadMusic();
+    if (token !== routeToken) return;
+    const today = dayKey(Date.now());
+    const base = `#/music/${tab}`;
+    const qs = (o) => { const u = new URLSearchParams({ type, genre, artist: artistQ, ...o }); [...u.keys()].forEach((k) => !u.get(k) && u.delete(k)); const str = u.toString(); return str ? `?${str}` : ""; };
+    let list = idx.items.filter((x) => x.date && (tab === "recent" ? x.date < today : x.date >= today));
+    if (type) list = list.filter((x) => x.type === type);
+    if (genre) list = list.filter((x) => (x.genres || x.tags || []).some((g) => g.toLowerCase() === genre.toLowerCase()));
+    if (artistQ) { const n = norm(artistQ); list = list.filter((x) => norm(x.artist).includes(n)); }
+    const genreCounts = {};
+    for (const x of idx.items) for (const g of x.genres || x.tags || []) genreCounts[g.toLowerCase()] = (genreCounts[g.toLowerCase()] || 0) + 1;
+    const topGenres = Object.entries(genreCounts).sort((x, y) => y[1] - x[1]).slice(0, 14).map(([g]) => g);
+    list.sort(tab === "recent" ? (x, y) => (x.chart ?? 9999) - (y.chart ?? 9999) || y.date.localeCompare(x.date)
+      : (x, y) => x.date.localeCompare(y.date) || (x.chart ?? 9999) - (y.chart ?? 9999));
+    const charting = list.filter((x) => x.chart);
+
+    const filters = tab === "search" ? "" : `
+      <div class="chips browse-chips"><a class="${!type ? "active" : ""}" href="${base}${qs({ type: "" })}">All types</a>
+        ${MUSIC_TYPES.map((t2) => `<a class="${type === t2 ? "active" : ""}" href="${base}${qs({ type: t2 })}">${t2}s</a>`).join("")}</div>
+      <div class="chips browse-chips"><a class="${!genre ? "active" : ""}" href="${base}${qs({ genre: "" })}">All genres</a>
+        ${topGenres.map((g) => `<a class="${genre === g ? "active" : ""}" href="${base}${qs({ genre: g })}">${esc(g)}</a>`).join("")}</div>
+      <form class="anime-search" id="artistFilter"><input id="artistQ" type="search" value="${esc(artistQ)}" placeholder="Filter by artist…" aria-label="Filter by artist">
+        <button class="btn btn-ghost" type="submit">Filter</button></form>`;
+
+    app.innerHTML = `<section class="browse">
+      <header class="browse-head"><p class="kicker">🎵 Music</p><h1 class="cal-title">${{ upcoming: "Upcoming releases", calendar: "Release calendar", recent: "Just released", search: "Search music" }[tab]}</h1></header>
+      <nav class="tabs">${MUSIC_TABS.map(([k, l]) => `<a class="${k === tab ? "active" : ""}" href="#/music/${k}">${l}</a>`).join("")}</nav>
+      ${filters}
+      ${tab === "search" ? `<form class="anime-search" id="musicSearchForm"><input id="musicQ" type="search" value="${esc(q)}" placeholder="Search albums and artists…" autocomplete="off" aria-label="Search music">
+        <button class="btn btn-solid" type="submit">Search</button></form>` : ""}
+      <div id="musicList"></div>${MUSIC_ATTR}</section>`;
+    $("#artistFilter")?.addEventListener("submit", (e) => { e.preventDefault(); location.hash = `${base}${qs({ artist: $("#artistQ").value.trim() })}`; });
+    $("#musicSearchForm")?.addEventListener("submit", (e) => { e.preventDefault(); const v = $("#musicQ").value.trim(); if (v) location.hash = `#/music/search/${encodeURIComponent(v)}`; });
+    const el = $("#musicList");
+    if (!idx.items.length && tab !== "search") { el.innerHTML = `<div class="cal-empty">Music data hasn't been built yet — it arrives with the next daily update.</div>`; return; }
+
+    if (tab === "calendar") {
+      const sel = params.get("d") && /^\d{4}-\d{2}-\d{2}$/.test(params.get("d")) ? params.get("d") : today;
+      const selT = parseDay(sel), d0 = new Date(selT);
+      const first = new Date(d0.getFullYear(), d0.getMonth(), 1);
+      const lead = (first.getDay() - firstDayOfWeek() + 7) % 7;
+      const weeks = Math.ceil((lead + new Date(d0.getFullYear(), d0.getMonth() + 1, 0).getDate()) / 7);
+      const byDay = new Map();
+      for (const x of idx.items.filter((y) => y.precision === "day")) {
+        if (type && x.type !== type) continue;
+        if (genre && !(x.genres || x.tags || []).some((g) => g.toLowerCase() === genre)) continue;
+        if (artistQ && !norm(x.artist).includes(norm(artistQ))) continue;
+        if (!byDay.has(x.date)) byDay.set(x.date, []);
+        byDay.get(x.date).push(x);
+      }
+      const shift = (n) => dayKey(new Date(d0.getFullYear(), d0.getMonth() + n, 1).getTime());
+      let cells = "";
+      for (let i = 0; i < weeks * 7; i++) {
+        const d = new Date(first.getFullYear(), first.getMonth(), 1 - lead + i), k = dayKey(d.getTime());
+        const l = byDay.get(k) || [];
+        cells += `<a class="cal-cell ${d.getMonth() !== d0.getMonth() ? "other" : ""} ${k === today ? "today" : ""} ${k === sel ? "selected" : ""} ${l.length ? "has" : ""}"
+          href="#/music/calendar${qs({ d: k })}"><span class="cal-num">${d.getDate()}</span>${l.length ? `<span class="cal-count">${l.length}</span>` : ""}
+          <span class="cal-thumbs">${l.filter((x) => x.cover).slice(0, 3).map((x) => `<i class="sq" style="${bg(x.cover)}"></i>`).join("")}</span></a>`;
+      }
+      const dayList = (byDay.get(sel) || []).sort((x, y) => (x.chart ?? 9999) - (y.chart ?? 9999));
+      el.innerHTML = `<div class="cal-layout"><div class="cal-month">
+          <div class="cal-controls"><a class="round" href="#/music/calendar${qs({ d: shift(-1) })}">‹</a><strong>${esc(fmt(selT, { month: "long", year: "numeric" }))}</strong>
+            <a class="round" href="#/music/calendar${qs({ d: shift(1) })}">›</a><a class="btn btn-solid btn-sm" href="#/music/calendar${qs({ d: today })}">Today</a></div>
+          <div class="cal-grid">${Array.from({ length: 7 }, (_, i) => `<span class="cal-wd">${esc(new Date(2024, 0, 7 + ((firstDayOfWeek() + i) % 7)).toLocaleDateString(LANG, { weekday: "short" }))}</span>`).join("")}${cells}</div>
+          <p class="muted small">Only releases with an exact day appear on the calendar.</p></div>
+        <div class="cal-list"><div class="cal-list-head"><div><h2>${esc(longDate(selT))}</h2><p class="muted">${plural(dayList.length, "release", "releases")}</p></div></div>
+          ${dayList.length ? `<div class="ggrid">${dayList.map(musicCard).join("")}</div>` : `<div class="cal-empty">No releases on our list for this day.</div>`}</div></div>`;
+      return;
+    }
+
+    if (tab === "search") {
+      if (!q) { el.innerHTML = `<div class="cal-empty">Search by album or artist — e.g. Taylor Swift, Midnights, A. R. Rahman.</div>`; return; }
+      const nq = norm(q);
+      const local = idx.items.filter((x) => norm(`${x.title} ${x.artist}`).includes(nq)).slice(0, 30);
+      el.innerHTML = `${local.length ? `<section class="gsection"><div class="row-head"><h2 class="row-title">Upcoming & recent</h2></div><div class="ggrid">${local.map(musicCard).join("")}</div></section>` : ""}
+        <div id="mbArtists"><div class="loading-strip"><div class="spinner"></div></div></div><div id="mbAlbums"></div>`;
+      try {
+        const artists = await mb.search({ query: q, kind: "artist", limit: 8 });
+        if (token !== routeToken) return;
+        $("#mbArtists").innerHTML = artists.length ? `<section class="gsection"><div class="row-head"><h2 class="row-title">Artists</h2></div><div class="follow-list">${artists.map((x) => `
+          <a class="sp" href="${artistHref(x.id)}"><span class="sp-photo">${esc(initials(x.name))}</span><strong>${esc(x.name)}</strong>
+            <span>${esc([x.type, x.country && countryName(x.country), x.disambiguation].filter(Boolean).join(" · "))}</span></a>`).join("")}</div></section>` : "";
+        const albums = await mb.search({ query: q, kind: "release-group", limit: 18 });
+        if (token !== routeToken) return;
+        $("#mbAlbums").innerHTML = albums.length ? `<section class="gsection"><div class="row-head"><h2 class="row-title">Albums & singles</h2></div><div class="ggrid">${albums.map((r) => musicCard({
+          id: r.sourceId, title: r.title, artist: r.extra.artistCredit.map((c) => c.name + c.join).join(""), type: r.format,
+          date: r.releaseDate, precision: r.datePrecision, cover: r.poster, confirmed: false })).join("")}</div></section>` : (local.length ? "" : `<div class="cal-empty">No results for “${esc(q)}”.</div>`);
+      } catch (err) {
+        if (token === routeToken) $("#mbArtists").innerHTML = `<div class="cal-empty">Couldn't reach MusicBrainz (${esc(err.message)}).</div>`;
+      }
+      return;
+    }
+
+    // upcoming / recent — paged grid, charting artists highlighted first
+    el.innerHTML = `${charting.length && !artistQ ? `<section class="gsection"><div class="row-head"><h2 class="row-title">🔥 From popular artists</h2></div>
+      <div class="ggrid">${charting.slice(0, 18).map(musicCard).join("")}</div></section>` : ""}
+      <section class="gsection"><div class="row-head"><h2 class="row-title">${tab === "recent" ? "All recent releases" : "All upcoming releases"} <span class="muted small">${list.length}</span></h2></div><div id="musicAll"></div></section>`;
+    const PER = 36;
+    mountPaged("musicAll", async (page) => ({ items: list.slice((page - 1) * PER, page * PER), page: { current: page, hasNext: page * PER < list.length } }),
+      musicCard, { empty: "No releases match these filters.", wrap: (h) => `<div class="ggrid">${h}</div>` });
+  }
+
+  async function renderAlbum(id, token) {
+    app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
+    const idx = await loadMusic();
+    const fromIdx = idx.items.find((x) => x.id === id);
+    let d = await loadAlbum(id);
+    if (!d) {
+      try {
+        const r = await mb.releaseGroup(id, fromIdx?.cover);
+        if (r) d = { id, title: r.title, artist: r.extra.artistCredit.map((c) => c.name + c.join).join(""), artistCredit: r.extra.artistCredit,
+          type: r.format, date: fromIdx?.date || r.releaseDate, precision: fromIdx?.precision || r.datePrecision, cover: fromIdx?.cover || r.poster,
+          genres: r.genres, releases: r.extra.releases, links: r.extra.links, confirmed: r.extra.releases.some((x) => x.confirmed), chart: fromIdx?.chart || null };
+      } catch (_) { /* fall through */ }
+    }
+    if (token !== routeToken) return;
+    if (!d) return renderMessage("Release not found", "MusicBrainz has no release group with this id.");
+    document.title = `${d.title} — ${d.artist} — Countdown`;
+    const hue = [300, 260];
+    const credit = (d.artistCredit?.length ? d.artistCredit : (d.artists || []).map((aid, i) => ({ id: aid, name: i ? "" : d.artist, join: "" })))
+      .map((c) => (c.id ? `<a href="${artistHref(c.id)}">${esc(c.name)}</a>${esc(c.join || "")}` : esc(c.name + (c.join || "")))).join("");
+    const regional = (d.releases || []).filter((r) => r.date || r.country);
+    app.innerHTML = `
+      <header class="cine hero album-hero" style="${theme(hue)}">
+        ${fireLayers(d.cover ? d.cover.replace("front-250", "front-500") : null, orb)}
+        <div class="album-body">
+          <div class="album-cover" style="${bg(d.cover ? d.cover.replace("front-250", "front-500") : null)}">${d.cover ? "" : "♪"}</div>
+          <div>
+            <p class="byline re">🎵 ${esc(d.type)}${d.secondary?.length ? ` · ${d.secondary.map(esc).join(", ")}` : ""}</p>
+            <h1 class="pname">${esc(d.title)}</h1>
+            <p class="album-artist">${credit || esc(d.artist)}</p>
+            <p class="tagline">${d.date && d.date >= dayKey(Date.now()) ? "Releases" : "Released"} ${esc(musicDate(d.date, d.precision))}
+              ${d.confirmed ? `<span class="pill pill-ok">✓ Confirmed</span>` : `<span class="pill pill-dim">${d.precision === "day" ? "Not yet confirmed" : "Estimated / partial date"}</span>`}</p>
+            ${musicCountdown(d.date, d.precision).replace('class="date-only"', 'class="date-only big"')}
+            ${d.links?.length ? `<div class="ww-links">${d.links.map((l) => `<a class="ww-link" href="${esc(l.url)}" target="_blank" rel="noopener" style="--wc:#7c4dff"><span>${esc(l.name)}</span></a>`).join("")}</div>` : ""}
+          </div>
+        </div>
+      </header>
+      <section class="about">
+        <div><p class="kicker">About</p>
+          <p class="about-text">${esc(d.disambiguation || `${d.type} by ${d.artist}.`)}</p>
+          ${d.genres?.length ? `<div class="chips anime-tags">${d.genres.map((g) => `<a class="pill" href="#/music/upcoming?genre=${encodeURIComponent(g.toLowerCase())}">${esc(g)}</a>`).join("")}</div>` : ""}</div>
+        <dl class="facts">${[["Type", d.type], ["Artist", d.artist], ["First release", musicDate(d.firstReleaseDate || d.date, precisionOf(d.firstReleaseDate || d.date))],
+          ["Regional releases", regional.length ? String(regional.length) : ""], ["Chart", d.chart ? `#${d.chart} artist on ListenBrainz` : ""]]
+          .filter(([, v]) => v).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}
+          <div><dt>MusicBrainz IDs</dt><dd class="ids">Release group ${esc(id)}${d.release ? `<br>Release ${esc(d.release)}` : ""}</dd></div></dl>
+      </section>
+      ${regional.length ? `<section class="globaldates"><div class="art-head"><p class="kicker">Release dates by country</p></div>
+        <div class="cmp-wrap"><table class="cmp"><thead><tr><th>Country</th><th>Date</th><th>Status</th><th>Edition</th></tr></thead>
+          <tbody>${regional.map((r) => `<tr><td>${esc(r.country ? (r.country === "XW" ? "Worldwide" : r.country === "XE" ? "Europe" : countryName(r.country)) : "Not specified")}</td>
+            <td>${esc(musicDate(r.date, r.precision))}${r.confirmed ? " ✓" : ""}</td><td>${esc(r.status || "")}</td><td>${esc(r.title)}</td></tr>`).join("")}</tbody></table></div></section>` : ""}
+      ${MUSIC_ATTR.replace("Music data from", `<a href="https://musicbrainz.org/release-group/${esc(id)}" target="_blank" rel="noopener">View on MusicBrainz</a> · Music data from`)}`;
+    startEmbers($(".hero canvas"), hue, 0.5);
+  }
+  const precisionOf = (dt) => (!dt ? null : dt.length >= 10 ? "day" : dt.length >= 7 ? "month" : "year");
+
+  async function renderArtist(id) {
+    const token = routeToken;
+    app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
+    let a = null, err = null;
+    try { a = await mb.artist(id); } catch (e) { err = e; }
+    if (token !== routeToken) return;
+    if (!a) return renderMessage(err ? "Couldn't reach MusicBrainz" : "Artist not found", err ? err.message : "MusicBrainz has no artist with this id.");
+    document.title = `${a.name} — Countdown`;
+    const idx = await loadMusic();
+    const today = dayKey(Date.now());
+    const mine = idx.items.filter((x) => (x.artists || []).includes(id)).sort((x, y) => (x.date || "").localeCompare(y.date || ""));
+    const upcomingIds = new Set(mine.filter((x) => x.date >= today).map((x) => x.id));
+    const disc = a.releaseGroups.filter((r) => !upcomingIds.has(r.sourceId));
+    const byType = {};
+    for (const r of disc) (byType[r.format] ||= []).push(r);
+    const hue = [300, 260];
+    app.innerHTML = `
+      <header class="cine phero" style="${theme(hue)}">${fireLayers(mine.find((x) => x.cover)?.cover?.replace("front-250", "front-500") || null)}
+        <div class="phero-body"><div class="pphoto"><span>${esc(initials(a.name))}</span></div>
+          <div class="pinfo">
+            <p class="kicker">${esc(a.type || "Artist")}</p>
+            <h1 class="pname">${esc(a.name)}</h1>
+            <p class="pmeta">${[a.area || (a.country && countryName(a.country)), a.lifeSpan.begin ? `Since ${a.lifeSpan.begin.slice(0, 4)}` : "", a.lifeSpan.ended ? `until ${(a.lifeSpan.end || "").slice(0, 4)}` : "", a.disambiguation].filter(Boolean).map(esc).join(" · ")}</p>
+            <div class="pstats"><div><b>${a.releaseGroups.length}</b><span>Releases</span></div><div><b>${upcomingIds.size}</b><span>Upcoming</span></div></div>
+            ${a.genres.length ? `<div class="chips anime-tags">${a.genres.map((g) => `<span class="pill">${esc(g)}</span>`).join("")}</div>` : ""}
+            ${a.links.length ? `<div class="ww-links">${a.links.map((l) => `<a class="ww-link" href="${esc(l.url)}" target="_blank" rel="noopener" style="--wc:#7c4dff"><span>${esc(l.name)}</span></a>`).join("")}</div>` : ""}
+          </div></div></header>
+      <div class="browse">
+        ${upcomingIds.size ? `<section class="gsection"><div class="row-head"><h2 class="row-title">⏳ Upcoming</h2></div><div class="ggrid">${mine.filter((x) => upcomingIds.has(x.id)).map(musicCard).join("")}</div></section>` : ""}
+        ${["Album", "EP", "Single", "Soundtrack", "Compilation", "Other", "Broadcast"].filter((t2) => byType[t2]?.length).map((t2) => `
+          <section class="gsection"><div class="row-head"><h2 class="row-title">${t2 === "Other" ? "Other releases" : t2 + "s"} <span class="muted small">${byType[t2].length}</span></h2></div>
+            <div class="ggrid">${byType[t2].slice(0, 40).map((r) => musicCard({ id: r.sourceId, title: r.title, artist: a.name, type: r.format, date: r.releaseDate, precision: r.datePrecision, cover: r.poster })).join("")}</div></section>`).join("")}
+        ${MUSIC_ATTR.replace("Music data from", `<a href="${esc(a.sourceUrl)}" target="_blank" rel="noopener">${esc(a.name)} on MusicBrainz</a> · Music data from`)}
+      </div>`;
+    startEmbers($(".phero canvas"), hue, 0.5);
+  }
+
+  async function fillMusicRow(token) {
+    const el = $("#musicSoon");
+    if (!el) return;
+    const idx = await loadMusic();
+    if (token !== routeToken) return;
+    const today = dayKey(Date.now()), week = dayKey(Date.now() + 7 * DAY);
+    const list = idx.items.filter((x) => x.chart && x.date >= dayKey(Date.now() - 3 * DAY) && x.date <= week && x.cover)
+      .sort((x, y) => x.chart - y.chart).slice(0, 20).sort((x, y) => x.date.localeCompare(y.date));
+    if (!list.length) return el.remove();
+    el.outerHTML = row("row-music", "🎵 New Music This Week", list, (x) => musicCard(x).replace('class="gcard"', 'class="gcard in-rail"'), "rail-posters", `<a class="row-link" href="#/music">All music ›</a>`);
+  }
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -2615,6 +2882,8 @@
       return movie ? renderMovie(movie, token) : renderHome();
     }
     clearInterval(slideTimer);
+    if ((m = h.match(/^#\/music(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderMusic(m[1] || "upcoming", m[2] || "");
+    if ((m = h.match(/^#\/artist\/([0-9a-f-]{36})/i))) return renderArtist(m[1]);
     if ((m = h.match(/^#\/games(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderGames(m[1] || "upcoming", m[2] || "");
     if ((m = h.match(/^#\/tv(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderTV(m[1] || "airing", m[2] || "", m[3] || "");
     if ((m = h.match(/^#\/anime(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderAnime(m[1] || "schedule", m[2] || "", m[3] || "");

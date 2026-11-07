@@ -5,7 +5,7 @@
  * shape through its own provider adapter (providers/<name>.js). Pages render Releases and
  * never touch provider-specific fields, so adding a source means writing one adapter.
  *
- * @typedef {"movie"|"anime"|"series"|"game"} ReleaseType
+ * @typedef {"movie"|"anime"|"series"|"game"|"music"} ReleaseType
  * @typedef {"upcoming"|"releasing"|"finished"|"cancelled"|"hiatus"|"unknown"} ReleaseStatus
  *
  * @typedef {Object} Episode
@@ -31,7 +31,7 @@
  * @property {{id:number|string, name:string}[]} studios
  * @property {ReleaseStatus} status
  * @property {string|null} releaseDate  "YYYY-MM-DD" (day may be "01" when precision is lower).
- * @property {"day"|"month"|"year"|null} datePrecision
+ * @property {"day"|"month"|"quarter"|"year"|null} datePrecision  Precision is preserved; only "day" dates get a ticking countdown, and only when an exact time is known.
  * @property {{name:string, year:number}|null} season  e.g. { name: "FALL", year: 2026 }.
  * @property {number|null} episodes   Total episodes, if known.
  * @property {number|null} duration   Minutes per episode / runtime.
