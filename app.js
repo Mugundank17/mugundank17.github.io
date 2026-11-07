@@ -352,6 +352,7 @@
         </div>
         <nav class="chips home-filters" aria-label="Browse">
           ${BROWSE_TABS.map(([k, label]) => `<a href="#/browse/${k}">${label}</a>`).join("")}
+          <a href="#/tv">📺 TV</a>
           <a href="#/anime">🎌 Anime</a>
           <a href="#/feed">📰 Feed</a>
           <a href="#/rankings">🔥 Rankings</a>
@@ -374,6 +375,7 @@
           card, "", `<a class="row-link" href="#/browse/ott">All OTT ›</a>`)}
         ${row("row-rereleases", `Back in Cinemas · ${here}`, rereleases())}
         ${languageRows()}
+        <div id="tvSoon"></div>
         <div id="animeAiring"></div>
         <div id="onThisDay"></div>
         ${row("row-mine", "My Countdowns", custom.slice().sort(byDate))}
@@ -382,6 +384,7 @@
     startEmbers($(".billboard canvas"), hero.hue);
     fillOnThisDay(routeToken);
     fillAnimeRow(routeToken);
+    fillTVRow(routeToken);
   }
 
   // ---------- release calendar ----------
@@ -2037,6 +2040,308 @@
     }, 450);
   }
 
+
+  // =====================================================================
+  // TV series — TMDB for discovery/metadata (data/tv/, built daily),
+  // TVmaze for episode schedules and airing times (providers/tvmaze.js, live)
+  // =====================================================================
+  const tvmaze = window.Countdown?.providers?.tvmaze;
+  let tvIndexP = null;
+  const loadTV = () => (tvIndexP ||= fetch("data/tv/index.json").then((r) => (r.ok ? r.json() : { items: [] })).catch(() => { tvIndexP = null; return { items: [] }; }));
+  const tvDetailCache = new Map();
+  const loadTVDetail = (id) => {
+    if (!tvDetailCache.has(id)) tvDetailCache.set(id, fetch(`data/tv/${id}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+    return tvDetailCache.get(id);
+  };
+  const TV_REGIONS = ["IN", "US", "GB"];
+  const tvRegion = () => (TV_REGIONS.includes(COUNTRY) ? COUNTRY : "WW");
+  const tvHref = (x) => `#/tv/${x.tmdb}`;
+  const mazeHref = (id) => `#/tv/m${id}`;
+  const TV_ATTR = `<p class="muted small attribution">Show info and artwork from <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a>.
+    Episode schedules from <a href="https://www.tvmaze.com" target="_blank" rel="noopener">TVmaze</a>, licensed <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>.</p>`;
+
+  // Air time of an episode: exact instant when known, else the date only (no invented time).
+  const epTime = (e) => (e?.airstamp ? { t: e.airstamp, exact: true } : e?.airdate ? { t: parseDay(e.airdate), exact: false } : null);
+  const epCode = (e) => (e?.season != null && e?.number != null ? `S${e.season}E${e.number}` : e?.number != null ? `Episode ${e.number}` : "Special");
+  function epWhen(e, long = false) {
+    const w = epTime(e);
+    if (!w) return "Date TBA";
+    const d = fmt(w.t, long ? { weekday: "long", day: "numeric", month: "short" } : { weekday: "short", day: "numeric", month: "short" });
+    return w.exact ? `${d} · ${timeOfDay(w.t)}` : `${d} · time TBA`;
+  }
+  const epCountdown = (e, cls = "cd-mini") => {
+    const w = epTime(e);
+    if (!w) return "";
+    if (w.exact) return countdownAt(w.t, cls, "Aired");
+    const days = Math.round((w.t - startOfDay()) / DAY);
+    return days >= 0 ? `<span class="date-only">${days === 0 ? "Today" : days === 1 ? "Tomorrow" : `In ${days} days`}</span>` : "";
+  };
+
+  function tvCard(x) {
+    const n = x.next;
+    return `
+      <a class="gcard" href="${tvHref(x)}">
+        <div class="gcard-art" style="${bg(x.poster)}">
+          <span class="tag tag-type t-series">📺 ${esc(x.networks?.[0] || "Series")}</span>
+          ${x.lang && x.lang !== "en" ? `<span class="tag tag-lang">${esc(languageName(x.lang))}</span>` : ""}
+        </div>
+        <strong>${esc(x.title)}</strong>
+        ${x.originalTitle ? `<span class="gcard-orig">${esc(x.originalTitle)}</span>` : ""}
+        <span class="gcard-meta">${n ? `${epCode(n)} · ${esc(epWhen(n))}` : x.firstAir ? `Premieres ${esc(shortDate(parseDay(x.firstAir)))}` : "Date TBA"}</span>
+        ${n ? epCountdown(n) : x.firstAir && parseDay(x.firstAir) > Date.now() ? countdownAt(parseDay(x.firstAir), "cd-mini") : ""}
+      </a>`;
+  }
+  const tvRailCard = (x) => tvCard(x).replace('class="gcard"', 'class="gcard in-rail"');
+  const nextT = (x) => epTime(x.next)?.t ?? Infinity;
+
+  const TV_TABS = [["airing", "📺 Airing soon"], ["premieres", "🆕 New series"], ["schedule", "📡 Streaming schedule"], ["search", "🔍 Search"]];
+  const tvHead = (heading, active, extra = "") => `
+    <header class="browse-head"><p class="kicker">📺 TV series</p><h1 class="cal-title">${heading}</h1>${extra}</header>
+    <nav class="tabs">${TV_TABS.map(([k, l]) => `<a class="${k === active ? "active" : ""}" href="#/tv/${k}">${l}</a>`).join("")}</nav>`;
+  const regionChips = (base, active, withGlobal = true) => `<div class="chips browse-chips">
+    ${withGlobal ? `<a class="${active === "WW" ? "active" : ""}" href="${base}/WW">🌐 Global</a>` : ""}
+    ${TV_REGIONS.map((c) => `<a class="${active === c ? "active" : ""}" href="${base}/${c}">${esc(countryName(c))}</a>`).join("")}</div>`;
+
+  async function renderTV(tab = "airing", a = "", b = "") {
+    const token = routeToken;
+    if (/^\d+$/.test(tab)) return renderTVDetail(+tab, token);
+    if (/^m\d+$/.test(tab)) return renderMazeDetail(+tab.slice(1), token);
+    if (!TV_TABS.some(([k]) => k === tab)) tab = "airing";
+    document.title = "TV — Countdown";
+    const spin = `<div class="loading-strip"><div class="spinner"></div></div>`;
+
+    if (tab === "schedule") {
+      const cc = (a || (TV_REGIONS.includes(COUNTRY) ? COUNTRY : "WW")).toUpperCase();
+      const kind = b === "tv" ? "tv" : "web";
+      const dayQ = new URLSearchParams(location.hash.split("?")[1] || "").get("d");
+      const day = dayQ && /^\d{4}-\d{2}-\d{2}$/.test(dayQ) ? dayQ : dayKey(Date.now());
+      const days = Array.from({ length: 7 }, (_, i) => dayKey(startOfDay() + i * DAY));
+      const base = `#/tv/schedule`;
+      app.innerHTML = `<section class="browse">${tvHead("Streaming schedule", "schedule")}
+        <div class="chips browse-chips">
+          <a class="${cc === "WW" ? "active" : ""}" href="${base}/WW/${kind}?d=${day}">🌐 Global</a>
+          ${TV_REGIONS.map((c) => `<a class="${cc === c ? "active" : ""}" href="${base}/${c}/${kind}?d=${day}">${esc(countryName(c))}</a>`).join("")}
+          <span class="chip-sep"></span>
+          <a class="${kind === "web" ? "active" : ""}" href="${base}/${cc}/web?d=${day}">📡 Streaming</a>
+          ${cc !== "WW" ? `<a class="${kind === "tv" ? "active" : ""}" href="${base}/${cc}/tv?d=${day}">📺 TV broadcast</a>` : ""}
+        </div>
+        <div class="chips browse-chips">${days.map((d, i) => `<a class="${d === day ? "active" : ""}" href="${base}/${cc}/${kind}?d=${d}">
+          ${i === 0 ? "Today" : i === 1 ? "Tomorrow" : esc(fmt(parseDay(d), { weekday: "short", day: "numeric" }))}</a>`).join("")}</div>
+        <p class="muted small">Times in your time zone. ${kind === "web" ? "Streaming releases on services like Netflix, Prime Video and JioHotstar." : "Broadcast TV in " + esc(countryName(cc)) + "."}</p>
+        <div id="tvList">${spin}</div>${TV_ATTR}</section>`;
+      try {
+        const [items, idx] = await Promise.all([tvmaze.schedule({ date: day, country: cc === "WW" ? "" : cc, kind }), loadTV()]);
+        if (token !== routeToken) return;
+        const byMaze = new Map(idx.items.filter((x) => x.tvmaze).map((x) => [x.tvmaze.id, x]));
+        const el = $("#tvList");
+        el.innerHTML = items.length ? `<div class="sched">${items.map(({ release: r, episode: e }) => {
+          const mine = byMaze.get(r.sourceId);
+          const w = epTime(e);
+          return `
+            <a class="sched-item ${w?.exact && w.t <= Date.now() ? "aired" : ""}" href="${mine ? tvHref(mine) : mazeHref(r.sourceId)}">
+              <span class="sched-time">${w?.exact ? esc(timeOfDay(w.t)) : "TBA"}</span>
+              <span class="sched-poster" style="${bg(mine?.poster || r.poster)}"></span>
+              <span class="sched-body">
+                <strong>${esc(mine?.title || r.title)}</strong>
+                <span class="muted small">${epCode(e)}${e.name ? ` · ${esc(e.name)}` : ""}${r.extra?.network ? ` · ${esc(r.extra.network)}` : ""}</span>
+              </span>
+              ${epCountdown(e)}
+            </a>`;
+        }).join("")}</div>` : `<div class="cal-empty">No ${kind === "web" ? "streaming" : "TV"} episodes listed for this day${cc !== "WW" ? ` in ${esc(countryName(cc))}` : ""}.
+          ${cc !== "WW" && kind === "web" ? `<a class="row-link" href="${base}/WW/web?d=${day}">See global streaming ›</a>` : ""}</div>`;
+      } catch (err) {
+        if (token === routeToken) $("#tvList").innerHTML = `<div class="cal-empty">Couldn't reach TVmaze (${esc(err.message)}). <button class="btn btn-ghost btn-sm" type="button" data-anime-retry>Try again</button></div>`;
+      }
+      return;
+    }
+
+    if (tab === "search") {
+      const q = decodeURIComponent(a || "");
+      app.innerHTML = `<section class="browse">${tvHead("Search TV series", "search")}
+        <form class="anime-search" id="tvSearchForm"><input id="tvQ" type="search" value="${esc(q)}" placeholder="Search TV shows…" autocomplete="off" aria-label="Search TV shows">
+          <button class="btn btn-solid" type="submit">Search</button></form>
+        <div id="tvList">${q ? spin : `<div class="cal-empty">Search any TV show — e.g. The Last of Us, Panchayat, Stranger Things.</div>`}</div>${TV_ATTR}</section>`;
+      $("#tvSearchForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#tvQ").value.trim(); if (v) location.hash = `#/tv/search/${encodeURIComponent(v)}`; });
+      if (!q) return;
+      const [idx, maze] = await Promise.all([loadTV(), tvmaze.search(q).catch(() => [])]);
+      if (token !== routeToken) return;
+      const nq = norm(q);
+      const local = idx.items.filter((x) => norm(`${x.title} ${x.originalTitle}`).includes(nq));
+      const localMaze = new Set(local.map((x) => x.tvmaze?.id).filter(Boolean));
+      const byMaze = new Map(idx.items.filter((x) => x.tvmaze).map((x) => [x.tvmaze.id, x]));
+      const others = maze.filter((r) => !localMaze.has(r.sourceId));
+      $("#tvList").innerHTML = (local.length ? `<section class="gsection"><div class="ggrid">${local.map(tvCard).join("")}</div></section>` : "") +
+        (others.length ? `<section class="gsection"><div class="row-head"><h2 class="row-title">More from TVmaze</h2></div><div class="ggrid">${others.map((r) => {
+          const mine = byMaze.get(r.sourceId);
+          return mine ? tvCard(mine) : `
+            <a class="gcard" href="${mazeHref(r.sourceId)}"><div class="gcard-art" style="${bg(r.poster)}"><span class="tag tag-type t-series">📺 ${esc(r.extra?.network || "Series")}</span></div>
+              <strong>${esc(r.title)}</strong><span class="gcard-meta">${r.releaseDate ? esc(r.releaseDate.slice(0, 4)) : ""}${r.genres.length ? ` · ${r.genres.slice(0, 2).map(esc).join(", ")}` : ""}</span></a>`;
+        }).join("")}</div></section>` : "") ||
+        `<div class="cal-empty">No TV shows found for “${esc(q)}”.</div>`;
+      return;
+    }
+
+    // Airing soon / New series (TMDB discovery)
+    const cc = (a || tvRegion()).toUpperCase();
+    app.innerHTML = `<section class="browse">${tvHead(tab === "airing" ? "Airing soon" : "New series", tab)}
+      ${regionChips(`#/tv/${tab}`, cc)}<div id="tvList">${spin}</div>${TV_ATTR}</section>`;
+    const idx = await loadTV();
+    if (token !== routeToken) return;
+    let list;
+    if (tab === "airing") {
+      const inRegion = idx.items.filter((x) => x.next && (cc === "WW" || x.rank.airing?.[cc] || x.rank.streaming?.[cc] || x.origin?.includes(cc)));
+      list = inRegion.filter((x) => nextT(x) >= startOfDay() && nextT(x) < startOfDay() + 15 * DAY).sort((a2, b2) => nextT(a2) - nextT(b2));
+    } else {
+      list = idx.items.filter((x) => x.firstAir && parseDay(x.firstAir) >= startOfDay() - 7 * DAY && (cc === "WW" || x.rank.premieres?.[cc] || x.origin?.includes(cc)))
+        .sort((a2, b2) => parseDay(a2.firstAir) - parseDay(b2.firstAir));
+    }
+    $("#tvList").innerHTML = list.length ? `<div class="ggrid">${list.map(tvCard).join("")}</div>` :
+      `<div class="cal-empty">${idx.items.length ? `Nothing listed for ${esc(countryName(cc))} right now.` : "TV data hasn't been built yet — it arrives with the next daily update."}</div>`;
+  }
+
+  function episodeRow(e) {
+    const w = epTime(e);
+    return `
+      <article class="ep ${w?.exact && w.t <= Date.now() ? "aired" : ""}">
+        <span class="ep-img" style="${bg(e.image)}">${e.image ? "" : `<b>${esc(epCode(e))}</b>`}</span>
+        <div class="ep-body">
+          <p class="ep-code">${esc(epCode(e))}${e.type !== "regular" ? " · Special" : ""}${e.runtime ? ` · ${e.runtime} min` : ""}</p>
+          <strong>${esc(e.name || "TBA")}</strong>
+          <p class="muted small">${esc(epWhen(e, true))}</p>
+          ${e.summary ? `<p class="ep-sum">${esc(e.summary)}</p>` : ""}
+        </div>
+        <div class="ep-side">${epCountdown(e)}</div>
+      </article>`;
+  }
+
+  function seasonsBlock(eps, seasons, active) {
+    const nums = [...new Set(eps.map((e) => e.season).filter((n) => n != null))].sort((x, y) => x - y);
+    if (!nums.length) return "";
+    const cur = nums.includes(active) ? active : (() => {
+      const nextEp = eps.find((e) => (epTime(e)?.t ?? 0) >= startOfDay());
+      return nextEp?.season ?? nums[nums.length - 1];
+    })();
+    const list = eps.filter((e) => e.season === cur);
+    const info = seasons.find((s) => s.number === cur);
+    return `
+      <section class="episodes" id="episodes">
+        <div class="art-head"><p class="kicker">Episodes</p>
+          <div class="seg">${nums.map((n) => `<button type="button" class="${n === cur ? "active" : ""}" data-season="${n}">S${n}</button>`).join("")}</div></div>
+        <p class="muted small">Season ${cur}${info?.premiere ? ` · premiered ${esc(shortDate(parseDay(info.premiere)))}` : ""}${info?.network ? ` · ${esc(info.network)}` : ""} · ${plural(list.length, "episode", "episodes")}</p>
+        <div class="ep-list">${list.map(episodeRow).join("")}</div>
+      </section>`;
+  }
+
+  let tvPage = null; // { eps, seasons } for season switching
+  async function renderTVDetail(id, token) {
+    app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
+    const d = await loadTVDetail(id);
+    if (token !== routeToken) return;
+    if (!d) return renderMessage("Show not found", "This show isn't on our TV list.");
+    document.title = `${d.title} — Countdown`;
+    const hue = [210, 250];
+    const watchCC = TV_REGIONS.includes(COUNTRY) ? COUNTRY : "US";
+    const draw = (live = null, eps = null, seasons = []) => {
+      const next = live?.extra?.nextEpisode || d.next;
+      const w = epTime(next);
+      tvPage = eps ? { eps, seasons, d, live } : null;
+      app.innerHTML = `
+        <header class="cine hero" style="${theme(hue)}">
+          ${fireLayers(d.backdrop, orb)}
+          <div class="hero-body">
+            <p class="byline re">📺 ${esc(d.networks.join(" · ") || "TV series")}${d.status ? ` · ${esc(d.status)}` : ""}</p>
+            ${d.createdBy?.length ? `<p class="byline">Created by <strong>${d.createdBy.map(esc).join(" &amp; ")}</strong></p>` : ""}
+            ${d.logo ? `<img class="wr-logo" src="${esc(d.logo)}" alt="${esc(d.title)}">` : `<h1 class="mega" style="--len:${longestWord(d.title)}">${esc(d.title)}</h1>`}
+            ${d.originalTitle ? `<p class="orig-title">${esc(d.originalTitle)}</p>` : ""}
+            ${next ? `<p class="tagline">${esc(epCode(next))}${next.name ? ` · “${esc(next.name)}”` : ""} · ${esc(epWhen(next, true))}</p>`
+              : d.firstAir && parseDay(d.firstAir) > Date.now() ? `<p class="tagline">Premieres ${esc(longDate(parseDay(d.firstAir)))}</p>` : ""}
+            ${w?.exact ? countdownAt(w.t, "cd-hero", "Airing now") : next ? `<p class="local-note">${esc(epCountdown(next).replace(/<[^>]+>/g, "") || "")} — exact air time not announced yet.</p>`
+              : d.firstAir && parseDay(d.firstAir) > Date.now() ? countdownAt(parseDay(d.firstAir), "cd-hero") : ""}
+            <div class="cta cta-center">
+              ${d.trailers?.length ? `<button class="play" type="button" data-tv-trailer><span>▶</span> Watch Trailer</button>` : ""}
+              ${eps ? `<a class="btn btn-outline" href="#episodes" data-scroll="episodes">📋 Episodes</a>` : ""}
+            </div>
+          </div>
+        </header>
+        <section class="about">
+          <div><p class="kicker">About the show</p><p class="about-text">${esc(d.overview || "No description yet.")}</p>
+            ${d.genres?.length ? `<div class="chips anime-tags">${d.genres.map((g) => `<span class="pill">${esc(g)}</span>`).join("")}</div>` : ""}</div>
+          <dl class="facts">
+            ${[["First aired", d.firstAir ? longDate(parseDay(d.firstAir)) : ""], ["Seasons", d.seasons], ["Episodes", d.episodes], ["Status", d.status],
+              ["Network", d.networks.join(", ")], ["Schedule", d.schedule?.days?.length ? `${d.schedule.days.join(", ")}${d.schedule.time ? ` · ${d.schedule.time} (${d.tvmaze?.timezone || "network time"})` : ""}` : ""],
+              ["Rating", d.ratings?.[watchCC] || ""], ["Language", d.lang ? languageName(d.lang) : ""]]
+              .filter(([, v]) => v).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}
+          </dl>
+        </section>
+        ${eps ? seasonsBlock(eps, seasons) : d.tvmaze ? `<div class="loading-strip"><div class="spinner"></div></div>` :
+          d.seasonList?.length ? `<section class="episodes" id="episodes"><div class="art-head"><p class="kicker">Seasons</p></div>
+            <div class="ggrid">${d.seasonList.map((sn) => `<div class="gcard"><div class="gcard-art" style="${bg(sn.poster || d.poster)}"></div><strong>${esc(sn.name)}</strong>
+              <span class="gcard-meta">${sn.episodes ? plural(sn.episodes, "episode", "episodes") : ""}${sn.airDate ? ` · ${esc(sn.airDate.slice(0, 4))}` : ""}</span></div>`).join("")}</div></section>` : ""}
+        ${d.cast?.length ? `<section class="cine cast" style="${theme(hue)}">${fireLayers(d.backdrop)}<div class="cast-body"><p class="kicker">Cast</p><h2 class="cast-title">${esc(d.title)}</h2>
+          <div class="rail-wrap"><div class="rail cast-rail">${d.cast.map((c) => personCard({ ...c, tmdb: null, role: c.role + (c.episodes ? ` · ${c.episodes} ep` : "") })).join("")}</div></div></div></section>` : ""}
+        <section class="watchwhere"><div class="art-head"><p class="kicker">Where to watch · ${esc(countryName(watchCC))}</p></div>
+          ${d.watch?.[watchCC]?.length ? `<div class="chips">${d.watch[watchCC].map((n) => `<span class="pill">${esc(n)}</span>`).join("")}</div>
+            <p class="muted small"><a href="https://www.themoviedb.org/tv/${d.tmdb}/watch?locale=${watchCC}" target="_blank" rel="noopener">Open streaming links ↗</a> (JustWatch via TMDB)</p>`
+            : `<p class="ww-none">Not listed on a streaming service in ${esc(countryName(watchCC))} yet.</p>`}</section>
+        ${TV_ATTR.replace("Episode schedules from", d.tvmazeUrl ? `<a href="${esc(d.tvmazeUrl)}" target="_blank" rel="noopener">Episode guide on TVmaze</a> · Episode schedules from` : "Episode schedules from")}`;
+      startEmbers($(".hero canvas"), hue, 0.6);
+    };
+    draw();
+    if (!d.tvmaze) return;
+    try {
+      const [live, eps, seasons] = await Promise.all([tvmaze.show(d.tvmaze.id), tvmaze.episodes(d.tvmaze.id), tvmaze.seasons(d.tvmaze.id)]);
+      if (token === routeToken) { const y = scrollY; draw(live, eps, seasons); scrollTo(0, y); }
+    } catch (_) { if (token === routeToken) $(".loading-strip")?.remove(); }
+  }
+
+  async function renderMazeDetail(id, token) {
+    app.innerHTML = `<section class="empty-state"><div class="spinner"></div></section>`;
+    const idx = await loadTV();
+    const mine = idx.items.find((x) => x.tvmaze?.id === id);
+    if (mine) { location.replace(tvHref(mine)); return; }
+    try {
+      const [r, eps, seasons] = await Promise.all([tvmaze.show(id), tvmaze.episodes(id), tvmaze.seasons(id)]);
+      if (token !== routeToken) return;
+      if (!r) return renderMessage("Show not found", "TVmaze has no show with this id.");
+      document.title = `${r.title} — Countdown`;
+      const next = r.extra.nextEpisode, w = epTime(next);
+      tvPage = { eps, seasons };
+      app.innerHTML = `
+        <header class="cine hero" style="${theme([210, 250])}">${fireLayers(r.posterLarge, orb)}
+          <div class="hero-body">
+            <p class="byline re">📺 ${esc(r.extra.network || "TV series")} · ${esc(STATUS_LABEL[r.status] || "")}</p>
+            <h1 class="mega" style="--len:${longestWord(r.title)}">${esc(r.title)}</h1>
+            ${next ? `<p class="tagline">${esc(epCode(next))}${next.name ? ` · “${esc(next.name)}”` : ""} · ${esc(epWhen(next, true))}</p>` : ""}
+            ${w?.exact ? countdownAt(w.t, "cd-hero", "Airing now") : ""}
+          </div></header>
+        <section class="about"><div><p class="kicker">About the show</p><p class="about-text">${esc(r.description || "No description yet.")}</p>
+          ${r.genres.length ? `<div class="chips anime-tags">${r.genres.map((g) => `<span class="pill">${esc(g)}</span>`).join("")}</div>` : ""}</div>
+          <dl class="facts">${[["Premiered", r.releaseDate ? longDate(parseDay(r.releaseDate)) : ""], ["Network", r.extra.network], ["Language", r.extra.language],
+            ["Rating", r.score ? `${r.score / 10}/10` : ""]].filter(([, v]) => v).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl></section>
+        ${seasonsBlock(eps, seasons)}
+        ${r.extra.cast.length ? `<div class="rows"><section class="row"><div class="row-head"><h2 class="row-title">Cast</h2></div>
+          ${rail(r.extra.cast, (c) => personCard({ ...c, tmdb: null }), "cast-rail")}</section></div>` : ""}
+        ${TV_ATTR.replace("Episode schedules from", `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">This show on TVmaze</a> · Show data and schedules from`)}`;
+      startEmbers($(".hero canvas"), [210, 250], 0.6);
+    } catch (err) {
+      if (token === routeToken) renderMessage("Couldn't load this show", err.message);
+    }
+  }
+
+  // Home row: new episodes in the next 7 days (TMDB index, TVmaze times).
+  async function fillTVRow(token) {
+    const el = $("#tvSoon");
+    if (!el) return;
+    const idx = await loadTV();
+    if (token !== routeToken) return;
+    const cc = tvRegion();
+    const list = idx.items.filter((x) => x.next && nextT(x) >= Date.now() - 3600e3 && nextT(x) < Date.now() + 7 * DAY)
+      .sort((a, b) => (a.rank.airing?.[cc] || a.rank.streaming?.[cc] || 99) - (b.rank.airing?.[cc] || b.rank.streaming?.[cc] || 99) || b.pop - a.pop)
+      .slice(0, 20).sort((a, b) => nextT(a) - nextT(b));
+    if (!list.length) return el.remove();
+    el.outerHTML = row("row-tv", "📺 New Episodes This Week", list, tvRailCard, "rail-posters", `<a class="row-link" href="#/tv">All TV ›</a>`);
+  }
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -2132,6 +2437,7 @@
       return movie ? renderMovie(movie, token) : renderHome();
     }
     clearInterval(slideTimer);
+    if ((m = h.match(/^#\/tv(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderTV(m[1] || "airing", m[2] || "", m[3] || "");
     if ((m = h.match(/^#\/anime(?:\/([^/?]+))?(?:\/([^/?]+))?(?:\/([^/?]+))?/))) return renderAnime(m[1] || "schedule", m[2] || "", m[3] || "");
     if (h === "#/explore") return renderExplore();
     if ((m = h.match(/^#\/history(?:\/([\w-]+))?$/))) return renderHistory(m[1], token);
@@ -2250,6 +2556,12 @@
     const more = t.closest("[data-more]");
     if (more) return loadMore(more.dataset.more);
     if (t.closest("[data-anime-retry]")) return route();
+    const sn = t.closest("[data-season]");
+    if (sn && tvPage) { $("#episodes").outerHTML = seasonsBlock(tvPage.eps, tvPage.seasons, +sn.dataset.season); return; }
+    if (t.closest("[data-tv-trailer]")) {
+      const id = +location.hash.split("/")[2];
+      return loadTVDetail(id).then((d) => d?.trailers?.length && openTrailer({ id: `tv-${id}`, title: d.title, trailers: d.trailers }));
+    }
     if (t.closest("[data-anime-trailer]") && currentAnime?.trailer) {
       return openTrailer({ id: currentAnime.id, title: currentAnime.title, trailers: [currentAnime.trailer] });
     }
