@@ -2787,6 +2787,84 @@
     el.outerHTML = row("row-music", "🎵 New Music This Week", list, (x) => musicCard(x).replace('class="gcard"', 'class="gcard in-rail"'), "rail-posters", `<a class="row-link" href="#/music">All music ›</a>`);
   }
 
+
+  // =====================================================================
+  // Sidebar: sections (Movies, TV, Anime, Games, Music) and their categories.
+  // Fixed on wide screens; a slide-out drawer (☰) on phones.
+  // =====================================================================
+  const SIDEBAR = () => {
+    const tvcc = ["IN", "US", "GB"].includes(COUNTRY) ? COUNTRY : "US";
+    return [
+      { key: "movies", icon: "🎬", label: "Movies", href: "#/", items: [
+        ["🏠", "Home", "#/"], ["🍿", "In cinemas now", "#/browse/theatrical"], ["📺", "OTT / streaming", "#/browse/ott"],
+        ["🌟", "Premieres", "#/browse/premieres"], ["🗺", "Regional", "#/browse/regional"], ["🔁", "Re-releases", "#/", "row-rereleases"],
+        ["📅", "Calendar", "#/calendar"], ["📰", "Feed", "#/feed"], ["🔥", "Rankings", "#/rankings"], ["⚔", "Clashes", "#/clashes"],
+        ["⏰", "Delays", "#/delays"], ["🗓", "On this day", "#/history/today"], ["🌍", "Compare countries", "#/global"], ["⭐", "My watchlist", "#/browse/watchlist"],
+      ] },
+      { key: "tv", icon: "📺", label: "TV", href: "#/tv", items: [
+        ["📺", "Airing soon", "#/tv/airing"], ["🆕", "New series", "#/tv/premieres"], ["📡", "Streaming schedule", "#/tv/schedule"],
+        ["📻", "TV broadcast", `#/tv/schedule/${tvcc}/tv`], ["🔍", "Search", "#/tv/search"],
+      ] },
+      { key: "anime", icon: "🎌", label: "Anime", href: "#/anime", items: [
+        ["📅", "Airing schedule", "#/anime/schedule"], ["🍂", "This season", "#/anime/season"], ["🔜", "Upcoming", "#/anime/upcoming"], ["🔍", "Search", "#/anime/search"],
+      ] },
+      { key: "games", icon: "🎮", label: "Games", href: "#/games", items: [
+        ["🎮", "Upcoming", "#/games/upcoming"], ["🖥", "PC", "#/games/upcoming/PC"], ["🎮", "PlayStation", "#/games/upcoming/PlayStation"],
+        ["🟢", "Xbox", "#/games/upcoming/Xbox"], ["🔴", "Nintendo", "#/games/upcoming/Nintendo"], ["🧩", "DLC & expansions", "#/games/dlc"], ["🔍", "Search", "#/games/search"],
+      ] },
+      { key: "music", icon: "🎵", label: "Music", href: "#/music", items: [
+        ["🎵", "Upcoming", "#/music/upcoming"], ["💿", "Albums", "#/music/upcoming?type=Album"], ["🎤", "Singles", "#/music/upcoming?type=Single"],
+        ["📀", "EPs", "#/music/upcoming?type=EP"], ["🎞", "Soundtracks", "#/music/upcoming?type=Soundtrack"], ["📅", "Calendar", "#/music/calendar"],
+        ["🆕", "Just released", "#/music/recent"], ["🔍", "Search", "#/music/search"],
+      ] },
+    ];
+  };
+  const SECTION_OF = { tv: "tv", anime: "anime", games: "games", music: "music", artist: "music" };
+  let sbSection = null; // section picked in the sidebar (may differ from the page until a category is chosen)
+
+  function renderSidebar() {
+    const el = $("#sidebar");
+    if (!el) return;
+    const h = decodeURIComponent(location.hash || "#/");
+    const pageSection = SECTION_OF[section(h)] || "movies";
+    const active = sbSection || pageSection;
+    const secs = SIDEBAR();
+    const cur = secs.find((x) => x.key === active);
+    // Best-matching category: exact hash first, then the longest prefix.
+    const norm_ = (u) => (u === "#/" ? "#/" : u.replace(/\/$/, ""));
+    const cands = pageSection === active ? cur.items.filter(([, , href, scroll]) => !scroll && (h === href || (href !== "#/" && h.startsWith(href.split("?")[0]) && (!href.includes("?") || h.includes(href.split("?")[1]))))) : [];
+    const best = cands.sort((a, b) => (h === b[2]) - (h === a[2]) || b[2].length - a[2].length)[0]?.[2] ||
+      (pageSection === active && active === "movies" && (h === "#/" || h === "" || h === "#") ? "#/" : null);
+    el.innerHTML = `
+      <div class="sb-head"><a class="brand" href="#/">COUNT<span>DOWN</span></a>
+        <button class="sb-close" type="button" data-sb-close aria-label="Close categories">✕</button></div>
+      <nav class="sb-sections" aria-label="Sections">${secs.map((x) => `
+        <button type="button" class="sb-sec ${x.key === active ? "active" : ""}" data-sb-section="${x.key}" aria-pressed="${x.key === active}">
+          <span>${x.icon}</span>${esc(x.label)}</button>`).join("")}</nav>
+      <p class="sb-label">${esc(cur.label)}</p>
+      <nav class="sb-cats" aria-label="${esc(cur.label)} categories">${cur.items.map(([icon, label, href, scroll]) => `
+        <a class="sb-cat ${!scroll && norm_(href) === norm_(best || "") ? "active" : ""}" href="${href}" ${scroll ? `data-scroll="${scroll}"` : ""} data-sb-go>
+          <span>${icon}</span>${esc(label)}</a>`).join("")}</nav>
+      <div class="sb-foot"><button class="sb-cat" type="button" data-open-search><span>🔍</span>Search everything</button>
+        <button class="sb-cat" type="button" data-surprise><span>🎲</span>Surprise me</button>
+        <a class="sb-cat" href="#/explore" data-sb-go><span>🧭</span>Explore</a></div>`;
+  }
+  function openSidebar(open) {
+    document.body.classList.toggle("sb-open", open);
+    $("#sbOverlay").hidden = !open;
+    $("#menuBtn").setAttribute("aria-expanded", String(open));
+  }
+  $("#menuBtn").addEventListener("click", () => openSidebar(!document.body.classList.contains("sb-open")));
+  $("#sbOverlay").addEventListener("click", () => openSidebar(false));
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("sb-open")) openSidebar(false); });
+  $("#sidebar").addEventListener("click", (e) => {
+    const sec = e.target.closest("[data-sb-section]");
+    if (sec) { sbSection = sec.dataset.sbSection; renderSidebar(); return; }
+    if (e.target.closest("[data-sb-close]")) return openSidebar(false);
+    if (e.target.closest("[data-sb-go], [data-open-search], [data-surprise]")) { sbSection = null; openSidebar(false); }
+  });
+  addEventListener("hashchange", () => { sbSection = null; renderSidebar(); });
+
   // ---------- embers (canvas particles) ----------
   let embers = [];
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -3236,6 +3314,7 @@
     route();
     if (section(location.hash) === "home" || section(location.hash) === "calendar") scrollTo(0, y);
     if (ticketDialog.open && ticketFor) openTickets(ticketFor);
+    renderSidebar();
     toast(isWorld() ? "Showing worldwide releases" : `Showing ${countryName(COUNTRY)}`);
   }
   countrySel.addEventListener("change", () => setCountry(countrySel.value));
@@ -3321,6 +3400,7 @@
   fillCountries();
   updateLocText();
   route();
+  renderSidebar();
   onScroll();
   setInterval(tick, 1000);
 })();
